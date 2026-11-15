@@ -254,6 +254,7 @@ class ObsidianStatistics(BaseModel):
     total_notes: int = Field(..., description="Total number of notes in the vault")
     total_directories: int = Field(..., description="Total number of directories in the vault")
     calculated_at: datetime = Field(..., description="Timestamp when the statistics were last calculated")
+    mapping_duration: float | None = Field(default=None, description="Duration in seconds of the last vault mapping operation")
 
     def __rich__(self) -> Table:
         """Render the statistics as a :class:`rich.table.Table`.

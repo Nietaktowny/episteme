@@ -11,8 +11,11 @@ from pathlib import Path
 from typing import Any
 import yaml
 from datetime import datetime
+import time
+from functools import cached_property
 
 from rich.table import Table
+from rich import print
 
 from episteme.cli import EpistemeSettings
 from episteme.models import (
@@ -72,6 +75,7 @@ class ObsidianVault:
         self.settings: EpistemeSettings = settings if settings is not None else EpistemeSettings()
         self.root: VaultDirectory
         self.mapped_at: datetime
+        self.__mapping_duration: float | None = None
         self.map()
 
     def _parse_yaml(self, yaml_content: str) -> dict[str, Any]:
@@ -280,6 +284,7 @@ class ObsidianVault:
             2
             1
         """
+        start_time = time.perf_counter()
         root = VaultDirectory(
             path=self.settings.obsidian.vault_root
         )
@@ -297,9 +302,13 @@ class ObsidianVault:
         self.mapped_at = datetime.now()
 
         logger.info(f"Mapped Obsidian vault at {self.settings.obsidian.vault_root}, containing {root.note_count()} notes in {root.directory_count()} directories.")
+        end_time = time.perf_counter()
+        self.__mapping_duration = end_time - start_time
+        logger.debug(f"Mapping took {self.__mapping_duration:.2f} seconds.")
+        print(self)
         return root
 
-    @property
+    @cached_property
     def statistics(self) -> ObsidianStatistics:
         """Compute statistics for the mapped vault.
 
@@ -321,7 +330,8 @@ class ObsidianVault:
         return ObsidianStatistics(
             total_notes=self.root.note_count(),
             total_directories=self.root.directory_count(),
-            calculated_at=datetime.now()
+            calculated_at=datetime.now(),
+            mapping_duration=self.__mapping_duration
         )
 
     def __rich__(self) -> Table:
@@ -348,6 +358,7 @@ class ObsidianVault:
         statistics = self.statistics
         table.add_row("Vault Root", str(self.root.path))
         table.add_row("Mapped At", f"{self.mapped_at:%Y-%m-%d %H:%M:%S}")
+        table.add_row("Mapping Duration (s)", f"{statistics.mapping_duration:.2f}" if statistics.mapping_duration is not None else "N/A")
         table.add_row("Total Notes", str(statistics.total_notes))
         table.add_row("Total Directories", str(statistics.total_directories))
         return table
