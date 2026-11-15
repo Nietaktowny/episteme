@@ -43,5 +43,6 @@ nav:
   - Home: index.md
   - API reference:
       - episteme: reference/episteme.md
+      - episteme.obsidian: reference/obsidian.md
       - episteme.cli: reference/cli.md
       - episteme.models: reference/models.md

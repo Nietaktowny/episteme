@@ -8,7 +8,7 @@ from episteme.cli import EpistemeSettings, ObsidianSettings
 
 settings = EpistemeSettings(obsidian=ObsidianSettings(vault_root="~/vault"))
 episteme = Episteme(settings)
-print(episteme.obsidian_vault)
+print(episteme.obsidian)
 ```
 
 See the [API reference](reference/episteme.md) for details.

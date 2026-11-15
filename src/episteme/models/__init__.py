@@ -5,7 +5,7 @@ from datetime import datetime
 from typing import Any
 from enum import StrEnum, auto
 
-from pydantic import BaseModel, Field, computed_field
+from pydantic import BaseModel, Field
 from rich.markup import escape
 from rich.panel import Panel
 from rich.table import Table
@@ -280,92 +280,3 @@ class ObsidianStatistics(BaseModel):
         table.add_row("Last Calculated At", f"{self.calculated_at:%Y-%m-%d %H:%M:%S}")
 
         return table
-
-class ObsidianVault(BaseModel):
-    """A mapped Obsidian vault.
-
-    Attributes:
-        root: Root directory of the vault.
-        mapped_at: Timestamp when the vault was last mapped.
-        statistics: Computed statistics, recalculated on every access.
-
-    Examples:
-        >>> vault = ObsidianVault(root=VaultDirectory(path=Path("vault"), notes=[MarkdownNote(name="a")]))
-        >>> vault.statistics.total_notes
-        1
-        >>> vault.statistics.total_directories
-        0
-    """
-
-    root: VaultDirectory = Field(..., description="Root directory of the vault")
-    mapped_at: datetime = Field(default_factory=datetime.now, description="Timestamp when the vault was last mapped")
-
-    def __rich__(self) -> Table:
-        """Render the vault overview as a :class:`rich.table.Table`.
-
-        Returns:
-            Table with the vault root, mapping time and statistics.
-
-        Examples:
-            >>> table = ObsidianVault(root=VaultDirectory(path=Path("vault"))).__rich__()
-            >>> table.title
-            'Obsidian Vault Overview'
-            >>> table.row_count
-            4
-        """
-        table = Table(title="Obsidian Vault Overview", show_header=True, header_style="bold magenta")
-        table.add_column("Property", style="dim", width=30)
-        table.add_column("Value", justify="right")
-        
-        table.add_row("Vault Root", str(self.root.path))
-        table.add_row("Mapped At", f"{self.mapped_at:%Y-%m-%d %H:%M:%S}")
-        table.add_row("Total Notes", str(self.statistics.total_notes))
-        table.add_row("Total Directories", str(self.statistics.total_directories))
-        return table
-
-    def __str__(self) -> str:
-        """Return a plain-text overview of the vault.
-
-        Returns:
-            Multi-line description with root, mapping time and statistics.
-
-        Examples:
-            >>> vault = ObsidianVault(root=VaultDirectory(path=Path("vault")))
-            >>> lines = str(vault).splitlines()
-            >>> lines[0]
-            'Vault Root: vault'
-            >>> lines[2:]
-            ['Total Notes: 0', 'Total Directories: 0']
-        """
-        lines = [
-            f"Vault Root: {self.root.path}",
-            f"Mapped At: {self.mapped_at:%Y-%m-%d %H:%M:%S}",
-            f"Total Notes: {self.statistics.total_notes}",
-            f"Total Directories: {self.statistics.total_directories}",
-        ]
-        return "\n".join(lines)
-
-    @computed_field
-    @property
-    def statistics(self) -> ObsidianStatistics:
-        """Compute statistics for the vault.
-
-        Returns:
-            Statistics with note and directory totals and the calculation time.
-
-        Examples:
-            >>> sub = VaultDirectory(path=Path("v/s"), notes=[MarkdownNote(name="b")])
-            >>> vault = ObsidianVault(root=VaultDirectory(path=Path("v"), subdirectories=[sub]))
-            >>> stats = vault.statistics
-            >>> stats.total_notes, stats.total_directories
-            (1, 1)
-        """
-        total_notes = self.root.note_count()
-        total_directories = self.root.directory_count()
-        return ObsidianStatistics(
-            total_notes=total_notes,
-            total_directories=total_directories,
-            calculated_at=datetime.now()
-        )
-        
-    
