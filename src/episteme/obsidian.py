@@ -7,6 +7,7 @@ The :class:`ObsidianVault` class scans a vault and builds a tree of
 
 import os
 import logging
+from collections.abc import Iterator
 from pathlib import Path
 from datetime import datetime
 import time
@@ -200,7 +201,7 @@ class ObsidianVault:
         """
         return self.root.note_count()
     
-    def __iter__(self):
+    def __iter__(self) -> Iterator[MarkdownNote]:
         """Iterate over all notes in the vault.
 
         Yields:
@@ -230,7 +231,7 @@ class ObsidianVault:
         Returns:
             ``True`` if the note is in the vault, ``False`` otherwise.
         """
-        return note in self.root.iter_notes()
+        return any(note == candidate for candidate in self.root.iter_notes())
 
     def __getitem__(self, note_name: str) -> MarkdownNote:
         """Get a note by its name.
