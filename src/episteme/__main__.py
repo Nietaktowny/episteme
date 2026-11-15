@@ -1,5 +1,7 @@
 import logging
 
+from rich import print
+
 from episteme import Episteme
 
 logger = logging.getLogger("episteme")
@@ -15,6 +17,7 @@ def main():
     )
     
     episteme = Episteme()
+    print(episteme.obsidian_vault)
 
 if __name__ == "__main__":
     main()
