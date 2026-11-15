@@ -1,0 +1,47 @@
+site_name: Episteme
+site_description: Mapper and toolkit for Obsidian vaults
+docs_dir: docs
+site_dir: site
+
+theme:
+  name: material
+  features:
+    - navigation.sections
+    - navigation.top
+    - content.code.copy
+    - search.suggest
+
+plugins:
+  - search
+  - mkdocstrings:
+      handlers:
+        python:
+          paths: [src]
+          options:
+            docstring_style: google
+            show_source: true
+            show_root_heading: true
+            show_symbol_type_heading: true
+            show_symbol_type_toc: true
+            members_order: source
+            merge_init_into_class: true
+            separate_signature: true
+            show_signature_annotations: true
+            signature_crossrefs: true
+            # Keep private helpers (_name) and the useful dunders, hide the rest.
+            filters:
+              - "!^__(?!init__|rich__|str__)"
+
+markdown_extensions:
+  - admonition
+  - pymdownx.highlight
+  - pymdownx.superfences
+  - toc:
+      permalink: true
+
+nav:
+  - Home: index.md
+  - API reference:
+      - episteme: reference/episteme.md
+      - episteme.cli: reference/cli.md
+      - episteme.models: reference/models.md
