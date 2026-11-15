@@ -152,10 +152,65 @@ class MarkdownNote(BaseModel):
         with open(self.path, "r", encoding="utf-8") as f:
             return f.read()
 
+    def parse_yaml(self, yaml_content: str) -> dict[str, Any]:
+        r"""Parse YAML text into a dictionary.
+
+        Obsidian template placeholders (``{{ ... }}``) are quoted first so that
+        they do not break YAML parsing. Invalid YAML is logged and results in
+        an empty dictionary.
+
+        Args:
+            yaml_content: Raw YAML text.
+
+        Returns:
+            Parsed mapping, or an empty dictionary when the content is empty
+            or invalid.
+
+        Examples:
+            >>> note.parse_yaml("title: Note\ntags: [a, b]")
+            {'title': 'Note', 'tags': ['a', 'b']}
+            >>> note.parse_yaml("title: {{title}}")
+            {'title': '{{title}}'}
+            >>> note.parse_yaml("")
+            {}
+            >>> note.parse_yaml("key: [unclosed")
+            {}
+        """
+        yaml_content = yaml_content.strip().replace("{{", '"{{').replace("}}", '}}"')
+        try:
+            return yaml.safe_load(yaml_content) or {}
+        except yaml.YAMLError as e:
+            logger.error(f"Error parsing YAML frontmatter: {e}")
+            return {}
+
+    def extract_yaml_frontmatter(self, content: str) -> dict[str, Any]:
+        r"""Extract and parse the YAML frontmatter of a note.
+
+        Args:
+            content: Full note content.
+
+        Returns:
+            Frontmatter properties, or an empty dictionary when the note has
+            no (closed) frontmatter block.
+
+        Examples:
+            >>> note.extract_yaml_frontmatter("---\ntitle: A\n---\nBody")
+            {'title': 'A'}
+            >>> note.extract_yaml_frontmatter("No frontmatter")
+            {}
+            >>> note.extract_yaml_frontmatter("---\ntitle: A\nnever closed")
+            {}
+        """
+        if content.startswith("---"):
+            end_index = content.find("---", 3)
+            if end_index != -1:
+                return self.parse_yaml(content[3:end_index].strip())
+        return {}
+
     @cached_property
     def frontmatter(self) -> dict[str, Any]:
         """Frontmatter YAML properties, parsed on first access."""
-        return extract_yaml_frontmatter(self.content)
+        return self.extract_yaml_frontmatter(self.content)
 
     def __rich__(self) -> Panel:
         """Render the note as a :class:`rich.panel.Panel`.
@@ -255,6 +310,17 @@ class VaultDirectory(BaseModel):
     path: Path = Field(..., description="Path to the directory")
     notes: list[MarkdownNote] = Field(default_factory=list, description="List of notes in the directory")
     subdirectories: list["VaultDirectory"] = Field(default_factory=list, description="List of subdirectories in the directory")
+
+    def iter_notes(self) -> list[MarkdownNote]:
+        """Recursively iterate over all notes in this directory and its subdirectories.
+
+        Returns:
+            List of all notes.
+        """
+        all_notes = list(self.notes)
+        for subdirectory in self.subdirectories:
+            all_notes.extend(subdirectory.iter_notes())
+        return all_notes
 
     def _add_to_tree(self, tree: Tree) -> None:
         """Recursively add subdirectories and notes to a rich tree.

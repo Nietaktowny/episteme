@@ -150,6 +150,116 @@ class ObsidianVault:
         ]
         return "\n".join(lines)
 
+    def __eq__(self, other: object) -> bool:
+        """Compare two vaults for equality.
+
+        Args:
+            other: Another object to compare with.
+
+        Returns:
+            ``True`` if the other object is an :class:`ObsidianVault` with the
+            same root path, ``False`` otherwise.
+
+        Examples:
+            >>> import tempfile
+            >>> from episteme.cli import ObsidianSettings
+            >>> with tempfile.TemporaryDirectory() as tmp:
+            ...     vault1 = ObsidianVault(EpistemeSettings(obsidian=ObsidianSettings(vault_root=tmp)))
+            ...     vault2 = ObsidianVault(EpistemeSettings(obsidian=ObsidianSettings(vault_root=tmp)))
+            ...     vault1 == vault2
+            True
+        """
+        if not isinstance(other, ObsidianVault):
+            return NotImplemented
+        return self.root.path == other.root.path
+
+    def __hash__(self) -> int:
+        """Return a hash value for the vault.
+
+        Returns:
+            Hash of the vault root path.
+        """
+        return hash(self.root.path)
+    
+    def __len__(self) -> int:
+        """Return the total number of notes in the vault.
+
+        Returns:
+            Total number of notes in the vault.
+
+        Examples:
+            >>> import tempfile
+            >>> from episteme.cli import ObsidianSettings
+            >>> with tempfile.TemporaryDirectory() as tmp:
+            ...     root = Path(tmp)
+            ...     (root / "10_Projects").mkdir()
+            ...     _ = (root / "10_Projects" / "a.md").write_text("A")
+            ...     vault = ObsidianVault(EpistemeSettings(obsidian=ObsidianSettings(vault_root=root)))
+            ...     len(vault)
+            1
+        """
+        return self.root.note_count()
+    
+    def __iter__(self):
+        """Iterate over all notes in the vault.
+
+        Yields:
+            :class:`MarkdownNote` objects for each note in the vault.
+
+        Examples:
+            >>> import tempfile
+            >>> from episteme.cli import ObsidianSettings
+            >>> with tempfile.TemporaryDirectory() as tmp:
+            ...     root = Path(tmp)
+            ...     (root / "10_Projects").mkdir()
+            ...     _ = (root / "10_Projects" / "a.md").write_text("A")
+            ...     _ = (root / "b.md").write_text("B")
+            ...     vault = ObsidianVault(EpistemeSettings(obsidian=ObsidianSettings(vault_root=root)))
+            ...     notes = list(vault)
+            ...     len(notes)
+            2
+        """
+        yield from self.root.iter_notes()
+
+    def __contains__(self, note: MarkdownNote) -> bool:
+        """Check if a note is in the vault.
+
+        Args:
+            note: Note to check.
+
+        Returns:
+            ``True`` if the note is in the vault, ``False`` otherwise.
+        """
+        return note in self.root.iter_notes()
+
+    def __getitem__(self, note_name: str) -> MarkdownNote:
+        """Get a note by its name.
+
+        Args:
+            note_name: Name of the note (without extension).
+
+        Returns:
+            :class:`MarkdownNote` with the given name.
+
+        Raises:
+            KeyError: If no note with the given name exists in the vault.
+
+        Examples:
+            >>> import tempfile
+            >>> from episteme.cli import ObsidianSettings
+            >>> with tempfile.TemporaryDirectory() as tmp:
+            ...     root = Path(tmp)
+            ...     _ = (root / "a.md").write_text("A")
+            ...     vault = ObsidianVault(EpistemeSettings(obsidian=ObsidianSettings(vault_root=root)))
+            ...     note = vault["a"]
+            ...     note.name
+            'a'
+        """
+        for note in self.root.iter_notes():
+            if note.name == note_name:
+                return note
+        raise KeyError(f"No note named '{note_name}' found in the vault.")
+
     def _build_markdown_note(self, note_path: Path) -> MarkdownNote:
         r"""Create a :class:`MarkdownNote` for a markdown file.
 
