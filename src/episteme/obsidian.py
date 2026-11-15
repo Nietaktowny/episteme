@@ -8,8 +8,6 @@ The :class:`ObsidianVault` class scans a vault and builds a tree of
 import os
 import logging
 from pathlib import Path
-from typing import Any
-import yaml
 from datetime import datetime
 import time
 from functools import cached_property
@@ -78,79 +76,92 @@ class ObsidianVault:
         self.__mapping_duration: float | None = None
         self.map()
 
-    def _parse_yaml(self, yaml_content: str) -> dict[str, Any]:
-        r"""Parse YAML text into a dictionary.
-
-        Obsidian template placeholders (``{{ ... }}``) are quoted first so that
-        they do not break YAML parsing. Invalid YAML is logged and results in
-        an empty dictionary.
-
-        Args:
-            yaml_content: Raw YAML text.
+    def __repr__(self) -> str:
+        """Return a concise representation of the vault.
 
         Returns:
-            Parsed mapping, or an empty dictionary when the content is empty
-            or invalid.
+            String with the vault root and the number of notes and directories.
+
+        Examples:
+            >>> import tempfile
+            >>> from episteme.cli import ObsidianSettings
+            >>> with tempfile.TemporaryDirectory() as tmp:
+            ...     root = Path(tmp)
+            ...     (root / "10_Projects").mkdir()
+            ...     _ = (root / "10_Projects" / "a.md").write_text("A")
+            ...     vault = ObsidianVault(EpistemeSettings(obsidian=ObsidianSettings(vault_root=root)))
+            ...     repr(vault)
+            "ObsidianVault(root=PosixPath('/tmp/tmpabcd1234'), notes=1, directories=1)"
+        """
+        return f"ObsidianVault(root={self.root.path!r}, notes={self.root.note_count()}, directories={self.root.directory_count()})"
+
+    def __rich__(self) -> Table:
+        """Render the vault overview as a :class:`rich.table.Table`.
+
+        Returns:
+            Table with the vault root, mapping time and statistics.
 
         Examples:
             >>> import tempfile
             >>> from episteme.cli import ObsidianSettings
             >>> with tempfile.TemporaryDirectory() as tmp:
             ...     vault = ObsidianVault(EpistemeSettings(obsidian=ObsidianSettings(vault_root=tmp)))
-            ...     vault._parse_yaml("title: Note\ntags: [a, b]")
-            ...     vault._parse_yaml("title: {{title}}")
-            ...     vault._parse_yaml("")
-            ...     vault._parse_yaml("key: [unclosed")
-            {'title': 'Note', 'tags': ['a', 'b']}
-            {'title': '{{title}}'}
-            {}
-            {}
+            ...     table = vault.__rich__()
+            ...     table.title
+            ...     table.row_count
+            'Obsidian Vault Overview'
+            4
         """
-        yaml_content = yaml_content.strip().replace("{{", '"{{').replace("}}", '}}"')
-        try:
-            return yaml.safe_load(yaml_content) or {}
-        except yaml.YAMLError as e:
-            logger.error(f"Error parsing YAML frontmatter: {e}")
-            return {}
+        table = Table(title="Obsidian Vault Overview", show_header=True, header_style="bold magenta")
+        table.add_column("Property", style="dim", width=30)
+        table.add_column("Value", justify="right")
 
-    def _extract_yaml_frontmatter(self, content: str) -> dict[str, Any]:
-        r"""Extract and parse the YAML frontmatter of a note.
+        statistics = self.statistics
+        table.add_row("Vault Root", str(self.root.path))
+        table.add_row("Mapped At", f"{self.mapped_at:%Y-%m-%d %H:%M:%S}")
+        table.add_row("Mapping Duration (s)", f"{statistics.mapping_duration:.2f}" if statistics.mapping_duration is not None else "N/A")
+        table.add_row("Total Notes", str(statistics.total_notes))
+        table.add_row("Total Directories", str(statistics.total_directories))
+        return table
 
-        Args:
-            content: Full note content.
+    def __str__(self) -> str:
+        """Return a plain-text overview of the vault.
 
         Returns:
-            Frontmatter properties, or an empty dictionary when the note has
-            no (closed) frontmatter block.
+            Multi-line description with root, mapping time and statistics.
 
         Examples:
             >>> import tempfile
             >>> from episteme.cli import ObsidianSettings
             >>> with tempfile.TemporaryDirectory() as tmp:
             ...     vault = ObsidianVault(EpistemeSettings(obsidian=ObsidianSettings(vault_root=tmp)))
-            ...     vault._extract_yaml_frontmatter("---\ntitle: A\n---\nBody")
-            ...     vault._extract_yaml_frontmatter("No frontmatter")
-            ...     vault._extract_yaml_frontmatter("---\ntitle: A\nnever closed")
-            {'title': 'A'}
-            {}
-            {}
+            ...     lines = str(vault).splitlines()
+            ...     lines[0] == f"Vault Root: {tmp}"
+            ...     lines[2:]
+            True
+            ['Total Notes: 0', 'Total Directories: 0']
         """
-        if content.startswith("---"):
-            end_index = content.find("---", 3)
-            if end_index != -1:
-                yaml_content = content[3:end_index].strip()
-                return self._parse_yaml(yaml_content)
-        return {}
+        statistics = self.statistics
+        lines = [
+            f"Vault Root: {self.root.path}",
+            f"Mapped At: {self.mapped_at:%Y-%m-%d %H:%M:%S}",
+            f"Total Notes: {statistics.total_notes}",
+            f"Total Directories: {statistics.total_directories}",
+        ]
+        return "\n".join(lines)
 
-    def _read_markdown_note(self, note_path: Path) -> MarkdownNote:
-        r"""Read a markdown file into a :class:`MarkdownNote`.
+    def _build_markdown_note(self, note_path: Path) -> MarkdownNote:
+        r"""Create a :class:`MarkdownNote` for a markdown file.
+
+        The file itself is not read: only its timestamps are taken from the
+        filesystem. ``content`` and ``frontmatter`` are loaded lazily by the
+        note on first access.
 
         Args:
             note_path: Path to the markdown file, inside the vault root.
 
         Returns:
-            Note with its content, frontmatter, category directory and
-            filesystem timestamps.
+            Note with its path, category directory and filesystem timestamps.
 
         Examples:
             >>> import tempfile
@@ -160,7 +171,7 @@ class ObsidianVault:
             ...     (root / "30_Resources").mkdir()
             ...     _ = (root / "30_Resources" / "book.md").write_text("---\nauthor: X\n---\nText")
             ...     vault = ObsidianVault(EpistemeSettings(obsidian=ObsidianSettings(vault_root=root)))
-            ...     note = vault._read_markdown_note(root / "30_Resources" / "book.md")
+            ...     note = vault._build_markdown_note(root / "30_Resources" / "book.md")
             ...     note.name
             ...     note.frontmatter
             ...     note.category_directory
@@ -168,18 +179,13 @@ class ObsidianVault:
             {'author': 'X'}
             <CategoryDirectory.RESOURCES: '30_Resources'>
         """
-        with open(note_path, "r", encoding="utf-8") as f:
-            content = f.read()
-
-        yaml_frontmatter = self._extract_yaml_frontmatter(content)
-
+        stat = note_path.stat()
         return MarkdownNote(
             name=note_path.stem,
-            content=content,
+            path=note_path,
             category_directory=self._get_category_directory(note_path),
-            frontmatter=yaml_frontmatter,
-            created_at=datetime.fromtimestamp(note_path.stat().st_ctime),
-            updated_at=datetime.fromtimestamp(note_path.stat().st_mtime)
+            created_at=datetime.fromtimestamp(stat.st_ctime),
+            updated_at=datetime.fromtimestamp(stat.st_mtime)
         )
 
     def _map_subdirectory(self, dir_path: Path) -> VaultDirectory:
@@ -217,7 +223,7 @@ class ObsidianVault:
         with os.scandir(dir_path) as notes:
             for note in notes:
                 if note.is_file() and note.name.endswith(".md"):
-                    markdown_note = self._read_markdown_note(Path(note.path))
+                    markdown_note = self._build_markdown_note(Path(note.path))
                     subdirectory.notes.append(markdown_note)
                 elif note.is_dir() and note.name not in self.settings.obsidian.skip_dirs:
                     nested_subdirectory = self._map_subdirectory(Path(note.path))
@@ -291,7 +297,7 @@ class ObsidianVault:
         with os.scandir(self.settings.obsidian.vault_root) as notes:
             for note in notes:
                 if note.is_file() and note.name.endswith(".md"):
-                    markdown_note = self._read_markdown_note(Path(note.path))
+                    markdown_note = self._build_markdown_note(Path(note.path))
                     markdown_note.category_directory = self._get_category_directory(Path(note.path))
                     root.notes.append(markdown_note)
                 elif note.is_dir() and note.name not in self.settings.obsidian.skip_dirs:
@@ -307,25 +313,6 @@ class ObsidianVault:
         logger.debug(f"Mapping took {self.__mapping_duration:.2f} seconds.")
         print(self)
         return root
-
-    def __repr__(self) -> str:
-        """Return a concise representation of the vault.
-
-        Returns:
-            String with the vault root and the number of notes and directories.
-
-        Examples:
-            >>> import tempfile
-            >>> from episteme.cli import ObsidianSettings
-            >>> with tempfile.TemporaryDirectory() as tmp:
-            ...     root = Path(tmp)
-            ...     (root / "10_Projects").mkdir()
-            ...     _ = (root / "10_Projects" / "a.md").write_text("A")
-            ...     vault = ObsidianVault(EpistemeSettings(obsidian=ObsidianSettings(vault_root=root)))
-            ...     repr(vault)
-            "ObsidianVault(root=PosixPath('/tmp/tmpabcd1234'), notes=1, directories=1)"
-        """
-        return f"ObsidianVault(root={self.root.path!r}, notes={self.root.note_count()}, directories={self.root.directory_count()})"
 
     @cached_property
     def statistics(self) -> ObsidianStatistics:
@@ -352,58 +339,3 @@ class ObsidianVault:
             calculated_at=datetime.now(),
             mapping_duration=self.__mapping_duration
         )
-
-    def __rich__(self) -> Table:
-        """Render the vault overview as a :class:`rich.table.Table`.
-
-        Returns:
-            Table with the vault root, mapping time and statistics.
-
-        Examples:
-            >>> import tempfile
-            >>> from episteme.cli import ObsidianSettings
-            >>> with tempfile.TemporaryDirectory() as tmp:
-            ...     vault = ObsidianVault(EpistemeSettings(obsidian=ObsidianSettings(vault_root=tmp)))
-            ...     table = vault.__rich__()
-            ...     table.title
-            ...     table.row_count
-            'Obsidian Vault Overview'
-            4
-        """
-        table = Table(title="Obsidian Vault Overview", show_header=True, header_style="bold magenta")
-        table.add_column("Property", style="dim", width=30)
-        table.add_column("Value", justify="right")
-
-        statistics = self.statistics
-        table.add_row("Vault Root", str(self.root.path))
-        table.add_row("Mapped At", f"{self.mapped_at:%Y-%m-%d %H:%M:%S}")
-        table.add_row("Mapping Duration (s)", f"{statistics.mapping_duration:.2f}" if statistics.mapping_duration is not None else "N/A")
-        table.add_row("Total Notes", str(statistics.total_notes))
-        table.add_row("Total Directories", str(statistics.total_directories))
-        return table
-
-    def __str__(self) -> str:
-        """Return a plain-text overview of the vault.
-
-        Returns:
-            Multi-line description with root, mapping time and statistics.
-
-        Examples:
-            >>> import tempfile
-            >>> from episteme.cli import ObsidianSettings
-            >>> with tempfile.TemporaryDirectory() as tmp:
-            ...     vault = ObsidianVault(EpistemeSettings(obsidian=ObsidianSettings(vault_root=tmp)))
-            ...     lines = str(vault).splitlines()
-            ...     lines[0] == f"Vault Root: {tmp}"
-            ...     lines[2:]
-            True
-            ['Total Notes: 0', 'Total Directories: 0']
-        """
-        statistics = self.statistics
-        lines = [
-            f"Vault Root: {self.root.path}",
-            f"Mapped At: {self.mapped_at:%Y-%m-%d %H:%M:%S}",
-            f"Total Notes: {statistics.total_notes}",
-            f"Total Directories: {statistics.total_directories}",
-        ]
-        return "\n".join(lines)
