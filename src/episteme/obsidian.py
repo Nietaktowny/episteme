@@ -308,6 +308,25 @@ class ObsidianVault:
         print(self)
         return root
 
+    def __repr__(self) -> str:
+        """Return a concise representation of the vault.
+
+        Returns:
+            String with the vault root and the number of notes and directories.
+
+        Examples:
+            >>> import tempfile
+            >>> from episteme.cli import ObsidianSettings
+            >>> with tempfile.TemporaryDirectory() as tmp:
+            ...     root = Path(tmp)
+            ...     (root / "10_Projects").mkdir()
+            ...     _ = (root / "10_Projects" / "a.md").write_text("A")
+            ...     vault = ObsidianVault(EpistemeSettings(obsidian=ObsidianSettings(vault_root=root)))
+            ...     repr(vault)
+            "ObsidianVault(root=PosixPath('/tmp/tmpabcd1234'), notes=1, directories=1)"
+        """
+        return f"ObsidianVault(root={self.root.path!r}, notes={self.root.note_count()}, directories={self.root.directory_count()})"
+
     @cached_property
     def statistics(self) -> ObsidianStatistics:
         """Compute statistics for the mapped vault.
