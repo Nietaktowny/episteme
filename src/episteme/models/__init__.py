@@ -4,6 +4,7 @@ import logging
 from functools import cached_property
 from pathlib import Path
 from datetime import datetime
+from collections.abc import Iterator
 from typing import Any
 from enum import StrEnum, auto
 
@@ -15,61 +16,6 @@ from rich.table import Table
 from rich.tree import Tree
 
 logger = logging.getLogger("episteme")
-
-def parse_yaml(yaml_content: str) -> dict[str, Any]:
-    r"""Parse YAML text into a dictionary.
-
-    Obsidian template placeholders (``{{ ... }}``) are quoted first so that
-    they do not break YAML parsing. Invalid YAML is logged and results in
-    an empty dictionary.
-
-    Args:
-        yaml_content: Raw YAML text.
-
-    Returns:
-        Parsed mapping, or an empty dictionary when the content is empty
-        or invalid.
-
-    Examples:
-        >>> parse_yaml("title: Note\ntags: [a, b]")
-        {'title': 'Note', 'tags': ['a', 'b']}
-        >>> parse_yaml("title: {{title}}")
-        {'title': '{{title}}'}
-        >>> parse_yaml("")
-        {}
-        >>> parse_yaml("key: [unclosed")
-        {}
-    """
-    yaml_content = yaml_content.strip().replace("{{", '"{{').replace("}}", '}}"')
-    try:
-        return yaml.safe_load(yaml_content) or {}
-    except yaml.YAMLError as e:
-        logger.error(f"Error parsing YAML frontmatter: {e}")
-        return {}
-
-def extract_yaml_frontmatter(content: str) -> dict[str, Any]:
-    r"""Extract and parse the YAML frontmatter of a note.
-
-    Args:
-        content: Full note content.
-
-    Returns:
-        Frontmatter properties, or an empty dictionary when the note has
-        no (closed) frontmatter block.
-
-    Examples:
-        >>> extract_yaml_frontmatter("---\ntitle: A\n---\nBody")
-        {'title': 'A'}
-        >>> extract_yaml_frontmatter("No frontmatter")
-        {}
-        >>> extract_yaml_frontmatter("---\ntitle: A\nnever closed")
-        {}
-    """
-    if content.startswith("---"):
-        end_index = content.find("---", 3)
-        if end_index != -1:
-            return parse_yaml(content[3:end_index].strip())
-    return {}
 
 class CategoryDirectory(StrEnum):
     """Top-level vault directories used to categorize notes.
@@ -141,7 +87,7 @@ class MarkdownNote(BaseModel):
     created_at: datetime = Field(default_factory=datetime.now, description="Note creation timestamp")
     updated_at: datetime = Field(default_factory=datetime.now, description="Note last update timestamp")
     template: str | None = Field(default=None, description="Used template name. Used only if note content follows some template")
-    template_version: str | None = Field(default=None, description="Used template version. Used only if note content follows some template")
+    template_version: float | None = Field(default=None, description="Used template version. Used only if note content follows some template")
     is_archived: bool = Field(default=False, description="Whether note is archived")
     archived_at: datetime | None = Field(default=None, description="If note is archived, it tells approximate time when it was archived.")
     category_directory: CategoryDirectory = Field(default=CategoryDirectory.INBOX, description="Category directory where the note is stored")
@@ -167,6 +113,7 @@ class MarkdownNote(BaseModel):
             or invalid.
 
         Examples:
+            >>> note = MarkdownNote(name="Idea", path=Path("Idea.md"))
             >>> note.parse_yaml("title: Note\ntags: [a, b]")
             {'title': 'Note', 'tags': ['a', 'b']}
             >>> note.parse_yaml("title: {{title}}")
@@ -194,6 +141,7 @@ class MarkdownNote(BaseModel):
             no (closed) frontmatter block.
 
         Examples:
+            >>> note = MarkdownNote(name="Idea", path=Path("Idea.md"))
             >>> note.extract_yaml_frontmatter("---\ntitle: A\n---\nBody")
             {'title': 'A'}
             >>> note.extract_yaml_frontmatter("No frontmatter")
@@ -311,16 +259,28 @@ class VaultDirectory(BaseModel):
     notes: list[MarkdownNote] = Field(default_factory=list, description="List of notes in the directory")
     subdirectories: list["VaultDirectory"] = Field(default_factory=list, description="List of subdirectories in the directory")
 
-    def iter_notes(self) -> list[MarkdownNote]:
-        """Recursively iterate over all notes in this directory and its subdirectories.
+    def iter_notes(self) -> Iterator[MarkdownNote]:
+        """Lazily iterate over all notes in this directory and its subdirectories.
 
-        Returns:
-            List of all notes.
+        Notes located directly in this directory are yielded first, followed
+        by the notes of each subdirectory.
+
+        Yields:
+            Notes, one at a time.
+
+        Examples:
+            >>> nested = VaultDirectory(path=Path("a/b"), notes=[MarkdownNote(name="x", path=Path("a/b/x.md"))])
+            >>> top = VaultDirectory(
+            ...     path=Path("a"),
+            ...     notes=[MarkdownNote(name="y", path=Path("a/y.md"))],
+            ...     subdirectories=[nested],
+            ... )
+            >>> [note.name for note in top.iter_notes()]
+            ['y', 'x']
         """
-        all_notes = list(self.notes)
+        yield from self.notes
         for subdirectory in self.subdirectories:
-            all_notes.extend(subdirectory.iter_notes())
-        return all_notes
+            yield from subdirectory.iter_notes()
 
     def _add_to_tree(self, tree: Tree) -> None:
         """Recursively add subdirectories and notes to a rich tree.
@@ -396,6 +356,40 @@ class VaultDirectory(BaseModel):
         tree = Tree(f"[bold blue]{escape(str(self.path))}[/] [dim]({self.note_count()} notes)[/]")
         self._add_to_tree(tree)
         return tree
+
+    def __getitem__(self, note: str) -> MarkdownNote:
+        """Get note by it's name.
+
+        Args:
+            note (str): Note name (without the .md extension).
+
+        Raises:
+            KeyError: If the note is not found.
+
+        Returns:
+            MarkdownNote: The note with the specified name.
+        """
+        for markdown_note in self.notes:
+            if markdown_note.name == note:
+                return markdown_note
+        raise KeyError(f"Note '{note}' not found.")
+
+    def get_dir(self, path: Path) -> "VaultDirectory" | None:
+        """Recursively find a subdirectory by its path.
+
+        Args:
+            path: Path to the subdirectory to find.
+        
+        Returns:
+            The matching subdirectory, or None if not found.
+        """
+        if self.path == path:
+            return self
+        for subdirectory in self.subdirectories:
+            result = subdirectory.get_dir(path)
+            if result is not None:
+                return result
+        return None
 
 class ObsidianStatistics(BaseModel):
     """Aggregated statistics of a vault.
