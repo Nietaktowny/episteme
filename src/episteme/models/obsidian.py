@@ -14,7 +14,7 @@ from typing import Any, Literal, Self
 from enum import StrEnum, auto
 
 import yaml
-from pydantic import BaseModel, Field, field_validator
+from pydantic import BaseModel, Field, field_validator, model_validator
 from rich.markup import escape
 from rich.panel import Panel
 from rich.table import Table
@@ -146,8 +146,10 @@ class MarkdownNote(_VaultLocated):
         updated_at: Note last update timestamp.
         template: Name of the used template, if the note follows one.
         template_version: Version of the used template, if any.
-        is_archived: Whether the note is archived.
-        archived_at: Approximate archiving time, if archived.
+        is_archived: Whether the note is archived: always true for a note in the archive category (``40_Archive``),
+            whichever way the note was created.
+        archived_at: Approximate archiving time, if known. Nothing in the vault says when a note was archived
+            (moving a file keeps no date Episteme can trust across machines), so it is only set by whoever creates the note.
         category_directory: Category directory where the note is stored.
 
     The file is not read when the note is created. ``content`` and
@@ -189,6 +191,20 @@ class MarkdownNote(_VaultLocated):
     @classmethod
     def _normalize_name(cls, name: str) -> str:
         return unicodedata.normalize("NFC", name)
+
+    @model_validator(mode="after")
+    def _archived_by_category(self) -> Self:
+        """A note in the archive category is archived: the folder is what archives a note in this vault.
+
+        Examples:
+            >>> MarkdownNote(name="Old", path="40_Archive/Old.md", category_directory=CategoryDirectory.ARCHIVE).is_archived
+            True
+            >>> MarkdownNote(name="New", path="10_Projects/New.md", category_directory=CategoryDirectory.PROJECTS).is_archived
+            False
+        """
+        if self.category_directory is CategoryDirectory.ARCHIVE and not self.is_archived:
+            self.is_archived = True
+        return self
 
     @cached_property
     def content(self) -> str:

@@ -16,6 +16,7 @@ from episteme.models.obsidian import (
     ObsidianStatistics,
     VaultDirectory,
 )
+from episteme.database import Database
 from episteme.obsidian import ObsidianVault
 
 
@@ -1217,3 +1218,43 @@ class TestAttach:
     def test_a_note_cannot_be_attached_outside_the_vault(self):
         with pytest.raises(ValidationError):
             MarkdownNote(name="evil", path="../../etc/passwd")
+
+
+class TestArchivedNotes:
+    """A note in 40_Archive is archived; the database stores that and the view agrees."""
+
+    @pytest.fixture
+    def vault(self, tmp_path: Path) -> ObsidianVault:
+        for relative in ("40_Archive/Archived Projects/Old.md", "40_Archive/Top.md", "10_Projects/Live.md", "Loose.md", "30_Resources/40_Archive/Fake.md"):
+            file = tmp_path / relative
+            file.parent.mkdir(parents=True, exist_ok=True)
+            file.write_text("x", encoding="utf-8")
+        return ObsidianVault(ObsidianSettings(vault_root=tmp_path))
+
+    def test_notes_in_the_archive_are_archived_and_no_others(self, vault: ObsidianVault):
+        archived = {str(note.path) for note in vault if note.is_archived}
+        assert archived == {"40_Archive/Archived Projects/Old.md", "40_Archive/Top.md"}
+
+    def test_the_archive_is_the_top_level_folder_not_any_folder_with_that_name(self, vault: ObsidianVault):
+        assert not vault["Fake"].is_archived
+
+    def test_archived_at_is_not_invented(self, vault: ObsidianVault):
+        assert all(note.archived_at is None for note in vault)
+
+    def test_the_database_stores_it_and_the_view_agrees(self, vault: ObsidianVault):
+        database = Database(DataSettings(url=":memory:"))
+        database.sync_notes(vault)
+        stored = {row["path"]: row["is_archived"] for row in database.engine.fetch_all("SELECT path, is_archived FROM notes")}
+        viewed = {row["path"]: row["in_archive"] for row in database.engine.fetch_all("SELECT path, in_archive FROM vault_notes")}
+        assert stored == viewed and sum(stored.values()) == 2
+        assert {note.path.as_posix() for note in database.iter_notes() if note.is_archived} == {"40_Archive/Archived Projects/Old.md", "40_Archive/Top.md"}
+        database.close()
+
+    def test_notes_stored_before_this_were_wrong_and_are_corrected_by_the_next_sync(self, vault: ObsidianVault):
+        database = Database(DataSettings(url=":memory:"))
+        database.sync_notes(vault)
+        database.engine.execute("UPDATE notes SET is_archived = FALSE")  # how every archived note was stored until now
+        again = database.sync_notes(vault)
+        assert again.updated == 2 and again.unchanged == 3
+        assert database.engine.fetch_one("SELECT count(*) AS n FROM notes WHERE is_archived")["n"] == 2
+        database.close()
