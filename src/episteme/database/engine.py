@@ -10,6 +10,7 @@ from abc import ABC, abstractmethod
 from collections.abc import Iterator, Mapping, Sequence
 from contextlib import AbstractContextManager
 from importlib.resources.abc import Traversable
+from pathlib import Path
 from typing import Any, ClassVar, Self
 
 from episteme.cli import DatabaseEngineName, DataSettings
@@ -74,6 +75,22 @@ class DatabaseEngine(ABC):
     @abstractmethod
     def iterate(self, sql: str, params: Params | None = None, batch_size: int = 500) -> Iterator[Row]:
         """Run a query and lazily yield its rows, fetching ``batch_size`` at a time."""
+
+    @abstractmethod
+    def export_parquet(self, sql: str, path: Path, params: Params | None = None) -> int:
+        """Write the rows of a query to a Parquet file.
+
+        The file is written to ``path``, which must be in an existing folder and is replaced if it
+        exists. The rows keep the order of the query.
+
+        Args:
+            sql: The query; it must not end with a semicolon.
+            path: The file to write.
+            params: Parameters of the query.
+
+        Returns:
+            The number of rows written.
+        """
 
     @abstractmethod
     def transaction(self) -> AbstractContextManager[None]:

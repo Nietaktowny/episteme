@@ -31,7 +31,7 @@ episteme.data.views()        # {"evergreen_notes": "Notes of type evergreen, ...
 
 | View | Contents |
 |---|---|
-| `vault_notes` | Every note: `type`, `created`, `status`, `folder`, `in_archive`, `is_empty`, `modified_at`, `frontmatter`. |
+| `vault_notes` | Every note: `type`, `created`, `status`, `folder`, `in_archive`, `is_empty`, `modified_at`, `body_hash`, `frontmatter`. |
 | `evergreen_notes` | `domain`, `ankified_date` (`NULL` means not yet processed into Anki). |
 | `evergreen_placeholders` | Zero-byte notes in the Evergreen folder: the knowledge-gap TODOs. |
 | `project_notes` | `lane`, `closed_date`, `is_open` (active or paused), `is_closed` (done or abandoned). |

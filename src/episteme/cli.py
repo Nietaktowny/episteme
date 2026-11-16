@@ -9,7 +9,7 @@ from enum import StrEnum
 from pathlib import Path
 
 from pydantic_settings import BaseSettings, SettingsConfigDict
-from pydantic import Field, BaseModel
+from pydantic import Field, BaseModel, field_validator
 
 class ObsidianSettings(BaseModel):
     """Settings describing the Obsidian vault Episteme works on.
@@ -17,6 +17,8 @@ class ObsidianSettings(BaseModel):
     Attributes:
         vault_root: Path to the root of the Obsidian vault.
         skip_dirs: Names of directories skipped when mapping the vault.
+        snapshots_dir: Folder for database snapshots, relative to the vault root. It lives inside
+            the vault so that snapshots travel with it.
 
     Examples:
         >>> settings = ObsidianSettings()
@@ -24,6 +26,8 @@ class ObsidianSettings(BaseModel):
         PosixPath('.')
         >>> settings.skip_dirs
         ['.obsidian']
+        >>> settings.snapshots_dir
+        PosixPath('_system/snapshots')
 
         Values passed as strings are coerced to ``Path``:
 
@@ -33,6 +37,14 @@ class ObsidianSettings(BaseModel):
 
     vault_root: Path = Field(Path("."), description="Path to root of Obsidian vault")
     skip_dirs: list[str] = Field(default_factory=lambda: [".obsidian"], description="List of directories names to skip when mapping the vault")
+    snapshots_dir: Path = Field(Path("_system/snapshots"), description="Folder for database snapshots, relative to the vault root")
+
+    @field_validator("snapshots_dir")
+    @classmethod
+    def _inside_the_vault(cls, folder: Path) -> Path:
+        if folder.is_absolute() or ".." in folder.parts:
+            raise ValueError(f"snapshots_dir '{folder}' must be a folder inside the vault, relative to its root.")
+        return folder
 
 class DatabaseEngineName(StrEnum):
     """Database engines Episteme can store its data in.
@@ -74,6 +86,20 @@ class DataSettings(BaseModel):
     url: str = Field("episteme.duckdb", description="Connection URL of the database, or a file path for file-based engines")
 
 class SchedulerSettings(BaseModel):
+    """Settings of the scheduler that runs recurring jobs, such as syncing the vault.
+
+    Attributes:
+        enabled: Whether the scheduler does anything. When it is ``False``, starting the scheduler,
+            adding jobs and shutting it down are all ignored, so a program can keep its scheduling
+            code and simply switch it off (``SCHEDULER__ENABLED=false``).
+
+    Examples:
+        >>> SchedulerSettings().enabled
+        True
+        >>> SchedulerSettings(enabled=False).enabled
+        False
+    """
+
     enabled: bool = Field(True, description="Whether the scheduler is enabled")
 
 class EpistemeSettings(BaseSettings):
@@ -85,6 +111,7 @@ class EpistemeSettings(BaseSettings):
     Attributes:
         obsidian: Obsidian vault settings.
         data: Database settings.
+        scheduler: Scheduler settings.
 
     Examples:
         >>> settings = EpistemeSettings(obsidian=ObsidianSettings(vault_root="/tmp/vault"))
@@ -95,6 +122,11 @@ class EpistemeSettings(BaseSettings):
 
         >>> EpistemeSettings(obsidian={"skip_dirs": [".obsidian", ".trash"]}).obsidian.skip_dirs
         ['.obsidian', '.trash']
+
+        The scheduler can be switched off:
+
+        >>> EpistemeSettings(scheduler={"enabled": False}).scheduler.enabled
+        False
     """
 
     model_config = SettingsConfigDict(

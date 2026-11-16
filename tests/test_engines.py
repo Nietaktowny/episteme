@@ -276,3 +276,60 @@ class TestDuckDBUrl:
             engine.execute("INSERT INTO t VALUES (1)")
         with DuckDBEngine.from_settings(settings) as engine:
             assert engine.fetch_all("SELECT a FROM t") == [{"a": 1}]
+
+
+class TestExportParquet:
+    @pytest.fixture
+    def filled(self, engine: DatabaseEngine, tmp_path: Path):
+        fill(engine, 25)
+        return engine, tmp_path / "rows.parquet"
+
+    def test_returns_the_number_of_rows_and_writes_a_parquet_file(self, filled):
+        engine, target = filled
+        assert engine.export_parquet("SELECT id, label FROM items ORDER BY id", target) == 25
+        data = target.read_bytes()
+        assert data[:4] == b"PAR1" and data[-4:] == b"PAR1"  # the Parquet magic number, at both ends
+
+    def test_no_rows_still_gives_a_valid_file(self, engine: DatabaseEngine, tmp_path: Path):
+        target = tmp_path / "empty.parquet"
+        assert engine.export_parquet("SELECT id FROM items", target) == 0
+        assert target.read_bytes()[:4] == b"PAR1"
+
+    def test_parameters_reach_the_query(self, filled):
+        engine, target = filled
+        assert engine.export_parquet("SELECT id FROM items WHERE id >= $low", target, {"low": 20}) == 5
+
+    def test_a_trailing_semicolon_is_tolerated(self, filled):
+        engine, target = filled
+        assert engine.export_parquet("SELECT id FROM items;", target) == 25
+
+    def test_the_path_is_data_not_sql(self, engine: DatabaseEngine, tmp_path: Path):
+        fill(engine, 3)
+        target = tmp_path / "it's a 'quoted'; DROP TABLE items; -- Zażółć.parquet"
+        assert engine.export_parquet("SELECT id FROM items", target) == 3
+        assert target.exists()
+        assert engine.fetch_one("SELECT count(*) AS count FROM items") == {"count": 3}  # nothing was dropped
+
+    def test_an_existing_file_is_replaced(self, filled):
+        engine, target = filled
+        engine.export_parquet("SELECT id FROM items", target)
+        assert engine.export_parquet("SELECT id FROM items WHERE id < 3", target) == 3
+        assert target.stat().st_size > 0
+
+    def test_a_missing_folder_is_an_error(self, filled, tmp_path: Path):
+        engine, _ = filled
+        with pytest.raises(Exception):
+            engine.export_parquet("SELECT id FROM items", tmp_path / "no" / "such" / "folder" / "x.parquet")
+
+    def test_a_failing_query_writes_nothing(self, filled):
+        engine, target = filled
+        with pytest.raises(Exception):
+            engine.export_parquet("SELECT * FROM no_such_table", target)
+        assert not target.exists()
+
+    def test_the_row_order_is_kept(self, filled):
+        engine, target = filled
+        engine.export_parquet("SELECT id FROM items ORDER BY id DESC", target)
+        rows = engine.fetch_all(f"SELECT id FROM read_parquet('{target}')") if engine.name == "duckdb" else None
+        if rows is not None:
+            assert [r["id"] for r in rows] == list(range(24, -1, -1))

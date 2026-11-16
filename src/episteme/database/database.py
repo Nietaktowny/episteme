@@ -2,6 +2,7 @@
 
 import json
 import time
+from datetime import datetime
 import unicodedata
 from collections.abc import Iterable, Iterator
 from pathlib import Path, PurePosixPath
@@ -11,6 +12,7 @@ from episteme.cli import DataSettings
 from episteme.database.engine import DatabaseEngine, Row, create_engine
 from episteme.database.migrations import Migrations
 from episteme.database.queries import QueryStore
+from episteme.models.database import Snapshot
 from episteme.models.obsidian import CategoryDirectory, MarkdownNote
 from episteme.models.sync import ObsidianSyncResult
 
@@ -134,6 +136,7 @@ class Database:
         params["path"] = str(note.path)
         params["category_directory"] = note.category_directory.value
         params["frontmatter"] = json.dumps(note.frontmatter, default=str)
+        params["body_hash"] = note.body_hash
         return params
 
     @staticmethod
@@ -145,8 +148,11 @@ class Database:
         """
         values = dict(row)
         frontmatter = json.loads(values.pop("frontmatter"))
+        body_hash = values.pop("body_hash")
         note = MarkdownNote.model_validate(values)
         note.__dict__["frontmatter"] = frontmatter
+        if body_hash is not None:  # notes stored before the hash existed have none yet
+            note.__dict__["body_hash"] = body_hash
         return note
 
     def upsert_note(self, note: MarkdownNote) -> None:
@@ -341,6 +347,51 @@ class Database:
             removed=len(removed),
             database_seconds=time.perf_counter() - started,
         )
+
+    def snapshot(self, path: Path | str, overwrite: bool = False) -> Snapshot:
+        """Write the current state of the notes to a Parquet file, to compare against later.
+
+        The snapshot has one row per note: ``path`` (relative to the vault), ``name``, ``in_archive``,
+        ``is_empty``, ``size``, ``type``, ``created``, ``status``, ``body_hash`` and ``frontmatter``
+        (as JSON text). It holds nothing that depends on the machine (no file times, no absolute
+        paths), so the same vault gives the same snapshot anywhere. Two snapshots, or a snapshot and
+        the database, can be compared with SQL (``SELECT * FROM read_parquet('<file>')`` in DuckDB).
+
+        The database is not synced first: it is snapshotted as it is. The file is written in full or
+        not at all, and an existing file is never replaced unless ``overwrite`` is true, because
+        snapshots are meant to be kept.
+
+        Args:
+            path: The file to write. Missing folders are created.
+            overwrite: Replace the file if it exists.
+
+        Returns:
+            The file, how many notes it holds, its size and when it was taken.
+
+        Raises:
+            FileExistsError: If the file exists and ``overwrite`` is false.
+
+        Examples:
+            >>> import tempfile
+            >>> with tempfile.TemporaryDirectory() as tmp:
+            ...     database = Database(DataSettings(url=":memory:"))
+            ...     snapshot = database.snapshot(Path(tmp) / "snapshots" / "notes.parquet")
+            ...     snapshot.notes, snapshot.path.name, snapshot.path.is_file()
+            ...     database.close()
+            (0, 'notes.parquet', True)
+        """
+        target = Path(path)
+        if target.exists() and not overwrite:
+            raise FileExistsError(f"Snapshot '{target}' already exists; snapshots are kept, pass overwrite=True to replace it.")
+        target.parent.mkdir(parents=True, exist_ok=True)
+        taken_at = datetime.now()
+        partial = target.with_name(f"{target.name}.partial")
+        try:
+            notes = self.engine.export_parquet(self.queries["snapshot_notes"], partial)
+            partial.replace(target)
+        finally:
+            partial.unlink(missing_ok=True)
+        return Snapshot(path=target, notes=notes, size_bytes=target.stat().st_size, taken_at=taken_at)
 
     def close(self) -> None:
         """Close the database connection."""

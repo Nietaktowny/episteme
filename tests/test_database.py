@@ -199,7 +199,7 @@ class TestNotesTable:
         # Every stored model field has a column; where the file is on this machine is not stored.
         stored_fields = set(MarkdownNote.model_fields) - {"absolute_path"}
         assert stored_fields <= columns(database, "notes")
-        assert columns(database, "notes") - stored_fields == {"frontmatter"}
+        assert columns(database, "notes") - stored_fields == {"frontmatter", "body_hash"}
         assert "absolute_path" not in columns(database, "notes")
 
     def test_no_frontmatter_property_is_a_column(self, database: Database):

@@ -142,7 +142,7 @@ class TestVaultNotes:
         columns = {c["column_name"] for c in rows(world, "SELECT column_name FROM information_schema.columns WHERE table_name = 'vault_notes'")}
         assert columns == {
             "path", "name", "folder", "category_directory", "in_archive", "size", "is_empty",
-            "type", "created", "status", "modified_at", "frontmatter",
+            "type", "created", "status", "modified_at", "body_hash", "frontmatter",
         }
 
     def test_decodes_type_created_and_status(self, world: Database):

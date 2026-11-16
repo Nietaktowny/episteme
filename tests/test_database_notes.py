@@ -371,3 +371,59 @@ class TestSyncNotes:
             database.sync_notes([ghost])
         # a leaked open transaction would make this fail
         assert database.sync_notes(vault.root.iter_notes()).added == 3
+
+
+class TestBodyHashIsStored:
+    def test_it_is_stored_with_the_note(self, database: Database, vault: ObsidianVault):
+        database.upsert_note(vault["a"])
+        row = database.engine.fetch_one("SELECT body_hash FROM notes WHERE path = 'a.md'")
+        assert row == {"body_hash": vault["a"].body_hash}
+
+    def test_a_note_read_back_has_it_without_reading_its_file(self, database: Database, vault: ObsidianVault, vault_root: Path):
+        database.upsert_note(vault["a"])
+        expected = vault["a"].body_hash
+        (vault_root / "a.md").unlink()
+        stored = database.get_note("a.md")
+        assert stored.body_hash == expected
+        assert "content" not in stored.__dict__
+
+    def test_iterated_notes_have_it_too(self, database: Database, vault: ObsidianVault):
+        database.upsert_notes(vault.root.iter_notes())
+        assert all(len(note.body_hash) == 64 for note in database.iter_notes())
+
+    def test_an_edit_of_the_text_is_an_update(self, database: Database, vault: ObsidianVault, vault_root: Path):
+        database.sync_notes(vault)
+        (vault_root / "a.md").write_text("---\nstatus: draft\nwhen: 2027-01-02\nat: 12:00\n---\nZażółć!", encoding="utf-8")
+        vault.map()
+        assert counts(database.sync_notes(vault)) == (0, 1, 2, 0)
+
+    def test_an_edit_that_keeps_the_size_is_still_noticed(self, database: Database, tmp_path: Path):
+        path = tmp_path / "n.md"
+        fixed = dict(name="n", path="n.md", absolute_path=path, size=11, created_at=datetime(2027, 1, 1), updated_at=datetime(2027, 1, 2))
+        path.write_text("Hello world", encoding="utf-8")
+        database.sync_notes([MarkdownNote(**fixed)])
+        path.write_text("Hello wurld", encoding="utf-8")  # same size, same timestamps
+        assert counts(database.sync_notes([MarkdownNote(**fixed)])) == (0, 1, 0, 0)
+
+    def test_a_change_of_properties_alone_keeps_the_hash_but_is_still_an_update(self, database: Database, tmp_path: Path):
+        path = tmp_path / "n.md"
+        fixed = dict(name="n", path="n.md", absolute_path=path, size=20, created_at=datetime(2027, 1, 1), updated_at=datetime(2027, 1, 2))
+        path.write_text("---\nk: aaaa\n---\nSame text", encoding="utf-8")
+        database.sync_notes([MarkdownNote(**fixed)])
+        first = database.engine.fetch_one("SELECT body_hash FROM notes")["body_hash"]
+        path.write_text("---\nk: bbbb\n---\nSame text", encoding="utf-8")
+        assert counts(database.sync_notes([MarkdownNote(**fixed)])) == (0, 1, 0, 0)
+        assert database.engine.fetch_one("SELECT body_hash FROM notes")["body_hash"] == first
+
+    def test_a_row_stored_before_the_hash_existed_is_updated_once(self, database: Database, vault: ObsidianVault):
+        database.sync_notes(vault)
+        database.engine.execute("UPDATE notes SET body_hash = NULL")  # what a database from before V5 looks like
+        assert counts(database.sync_notes(vault)) == (0, 3, 0, 0)  # the vault has three notes: all get their hash
+        assert database.engine.fetch_one("SELECT count(*) AS n FROM notes WHERE body_hash IS NULL")["n"] == 0
+        assert counts(database.sync_notes(vault)) == (0, 0, 3, 0)  # and from then on they are unchanged
+
+    def test_a_note_without_a_stored_hash_reads_back_without_one(self, database: Database, vault: ObsidianVault):
+        database.sync_notes(vault)
+        database.engine.execute("UPDATE notes SET body_hash = NULL")
+        stored = database.get_note("a.md")
+        assert "body_hash" not in stored.__dict__

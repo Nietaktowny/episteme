@@ -123,6 +123,25 @@ class DuckDBEngine(DatabaseEngine):
         finally:
             cursor.close()
 
+    def export_parquet(self, sql: str, path: Path, params: Params | None = None) -> int:
+        """Write the rows of a query to a zstd-compressed Parquet file with ``COPY``.
+
+        The path is passed as a parameter, never formatted into the SQL.
+
+        Examples:
+            >>> import tempfile
+            >>> engine = DuckDBEngine.from_settings(DataSettings(url=":memory:"))
+            >>> with tempfile.TemporaryDirectory() as tmp:
+            ...     engine.export_parquet("SELECT 1 AS a UNION ALL SELECT 2", Path(tmp) / "rows.parquet")
+            ...     (Path(tmp) / "rows.parquet").read_bytes()[:4]
+            2
+            b'PAR1'
+            >>> engine.close()
+        """
+        parameters = {**(params or {}), "export_path": str(path)}
+        query = f"COPY ({sql.strip().rstrip(';')}) TO $export_path (FORMAT parquet, COMPRESSION zstd)"
+        return self.connection.execute(query, parameters).fetchone()[0]
+
     @contextmanager
     def transaction(self) -> Generator[None]:
         self.connection.execute("BEGIN TRANSACTION")

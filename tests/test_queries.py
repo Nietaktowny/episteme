@@ -70,7 +70,7 @@ class TestBundledSql:
     REQUIRED_QUERIES = {
         "history_create", "history_list", "history_insert", "tables", "views", "indexes",
         "note_upsert", "note_get", "note_exists", "notes_select", "notes_count",
-        "notes_delete", "notes_clear",
+        "notes_delete", "notes_clear", "snapshot_notes",
     }
 
     def test_has_the_required_queries(self, engine: str):

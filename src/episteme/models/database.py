@@ -3,6 +3,7 @@
 import hashlib
 import re
 from datetime import datetime
+from pathlib import Path
 
 from pydantic import BaseModel, ConfigDict, Field, field_validator
 from rich.markup import escape
@@ -142,3 +143,44 @@ class AppliedMigration(_Versioned):
         grid.add_row("took", f"{self.execution_time_ms} ms")
         grid.add_row("checksum", self.checksum[:12])
         return Panel(grid, title=f"[bold]V{escape(self.version)}[/] {escape(self.description)}", expand=False)
+
+
+class Snapshot(BaseModel):
+    """A snapshot of the vault's notes that was written to a file.
+
+    Attributes:
+        path: The Parquet file. It is a location on this machine, so it is not part of the snapshot.
+        notes: How many notes the snapshot holds.
+        size_bytes: Size of the file.
+        taken_at: When the snapshot was taken.
+
+    Examples:
+        >>> snapshot = Snapshot(path=Path("/tmp/notes_2026-11-20.parquet"), notes=1295, size_bytes=48210,
+        ...                     taken_at=datetime(2026, 11, 20, 8, 30))
+        >>> snapshot.notes, snapshot.path.name
+        (1295, 'notes_2026-11-20.parquet')
+    """
+
+    model_config = ConfigDict(frozen=True)
+
+    path: Path = Field(..., description="The Parquet file")
+    notes: int = Field(..., ge=0, description="How many notes the snapshot holds")
+    size_bytes: int = Field(..., ge=0, description="Size of the file")
+    taken_at: datetime = Field(..., description="When the snapshot was taken")
+
+    def __rich__(self) -> Panel:
+        """Render the snapshot as a :class:`rich.panel.Panel`.
+
+        Examples:
+            >>> snapshot = Snapshot(path=Path("a.parquet"), notes=1, size_bytes=1, taken_at=datetime(2026, 11, 20))
+            >>> isinstance(snapshot.__rich__(), Panel)
+            True
+        """
+        grid = Table.grid(padding=(0, 2))
+        grid.add_column(style="dim", justify="right")
+        grid.add_column()
+        grid.add_row("notes", f"[bold]{self.notes}[/]")
+        grid.add_row("file", escape(self.path.name))
+        grid.add_row("size", f"{self.size_bytes / 1024:.1f} KiB")
+        grid.add_row("taken", f"{self.taken_at:%Y-%m-%d %H:%M:%S}")
+        return Panel(grid, title="[bold]Snapshot[/]", expand=False)

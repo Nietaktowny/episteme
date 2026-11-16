@@ -167,3 +167,90 @@ class TestRichLabelOfDirectory:
     def test_falls_back_to_the_relative_path(self, render):
         text = render(VaultDirectory(path="10_Projects"))
         assert "10_Projects" in text
+
+
+class TestSplitFrontmatter:
+    @pytest.mark.parametrize(
+        ("content", "frontmatter", "body"),
+        [
+            ("---\ntitle: A\n---\nBody", "title: A", "Body"),
+            ("---\ntitle: A\n---\n\nTwo\nlines\n", "title: A", "\nTwo\nlines\n"),
+            ("---\n---\nBody", "", "Body"),
+            ("---\ntitle: A\n---", "title: A", ""),
+            ("No frontmatter", "", "No frontmatter"),
+            ("", "", ""),
+            ("---\ntitle: A\nnever closed", "", "---\ntitle: A\nnever closed"),
+            ("text\n---\ntitle: A\n---\nBody", "", "text\n---\ntitle: A\n---\nBody"),
+        ],
+        ids=["normal", "blank line after", "empty frontmatter", "no body", "none", "empty file", "unclosed", "not at the start"],
+    )
+    def test_split(self, content: str, frontmatter: str, body: str):
+        assert MarkdownNote.split_frontmatter(content) == (frontmatter, body)
+
+    def test_is_what_extract_yaml_frontmatter_parses(self):
+        note = MarkdownNote(name="a", path="a.md")
+        content = "---\nk: v\n---\nBody"
+        assert note.extract_yaml_frontmatter(content) == note.parse_yaml(MarkdownNote.split_frontmatter(content)[0]) == {"k": "v"}
+
+
+class TestBodyAndHash:
+    def note(self, tmp_path: Path, text: str, name: str = "a") -> MarkdownNote:
+        (tmp_path / f"{name}.md").write_text(text, encoding="utf-8")
+        return MarkdownNote(name=name, path=f"{name}.md", absolute_path=tmp_path / f"{name}.md")
+
+    def test_body_is_the_text_after_the_frontmatter(self, tmp_path: Path):
+        assert self.note(tmp_path, "---\nk: v\n---\nHello").body == "Hello"
+
+    def test_a_note_without_frontmatter_is_all_body(self, tmp_path: Path):
+        assert self.note(tmp_path, "just text").body == "just text"
+
+    def test_the_hash_is_sha256_hex_of_the_body(self, tmp_path: Path):
+        import hashlib
+
+        assert self.note(tmp_path, "---\nk: v\n---\nHello").body_hash == hashlib.sha256(b"Hello").hexdigest()
+
+    def test_changing_only_the_frontmatter_keeps_the_hash(self, tmp_path: Path):
+        one = self.note(tmp_path, "---\ntags: [a]\n---\nSame text", "one").body_hash
+        two = self.note(tmp_path, "---\ntags: [b, c]\nstatus: done\n---\nSame text", "two").body_hash
+        assert one == two
+
+    def test_changing_the_text_changes_the_hash(self, tmp_path: Path):
+        one = self.note(tmp_path, "---\nk: v\n---\nHello", "one").body_hash
+        two = self.note(tmp_path, "---\nk: v\n---\nHello!", "two").body_hash
+        assert one != two
+
+    def test_a_single_character_changes_the_hash_even_when_the_size_stays_the_same(self, tmp_path: Path):
+        one = self.note(tmp_path, "Hello world", "one")
+        two = self.note(tmp_path, "Hello wurld", "two")
+        assert len(one.body) == len(two.body) and one.body_hash != two.body_hash
+
+    def test_adding_frontmatter_to_a_note_keeps_the_hash(self, tmp_path: Path):
+        plain = self.note(tmp_path, "Body text", "plain").body_hash
+        with_frontmatter = self.note(tmp_path, "---\nk: v\n---\nBody text", "with").body_hash
+        assert plain == with_frontmatter
+
+    def test_an_empty_note_has_a_hash_of_the_empty_body(self, tmp_path: Path):
+        import hashlib
+
+        assert self.note(tmp_path, "").body_hash == hashlib.sha256(b"").hexdigest()
+
+    def test_unicode(self, tmp_path: Path):
+        assert len(self.note(tmp_path, "Zażółć gęślą jaźń 🚀").body_hash) == 64
+
+    def test_both_are_computed_lazily_from_the_file(self, tmp_path: Path):
+        note = self.note(tmp_path, "Hello")
+        assert "body" not in note.__dict__ and "body_hash" not in note.__dict__
+        _ = note.body_hash
+        assert "body" in note.__dict__ and "body_hash" in note.__dict__
+
+    def test_the_hash_needs_the_file_unless_it_is_known(self):
+        with pytest.raises(RuntimeError, match="not attached"):
+            _ = MarkdownNote(name="a", path="a.md").body_hash
+        note = MarkdownNote(name="a", path="a.md")
+        note.__dict__["body_hash"] = "abc"
+        assert note.body_hash == "abc"
+
+    def test_the_hash_is_not_a_field_and_is_not_dumped(self, tmp_path: Path):
+        note = self.note(tmp_path, "Hello")
+        _ = note.body_hash
+        assert "body_hash" not in note.model_dump() and "body" not in note.model_dump()

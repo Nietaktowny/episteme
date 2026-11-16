@@ -1,5 +1,6 @@
 """Pydantic models describing an Obsidian vault and its notes."""
 
+import hashlib
 import logging
 import re
 import unicodedata
@@ -238,6 +239,61 @@ class MarkdownNote(_VaultLocated):
             logger.error(f"Error parsing YAML frontmatter: {e}")
             return {}
 
+    @staticmethod
+    def split_frontmatter(content: str) -> tuple[str, str]:
+        r"""Split a note into its frontmatter text and its body.
+
+        The frontmatter is the text between the ``---`` that opens the note and the next ``---``.
+        A note without a (closed) frontmatter block has an empty frontmatter and is all body.
+
+        Args:
+            content: Full note content.
+
+        Returns:
+            ``(frontmatter, body)``. The frontmatter is stripped; the body starts after the line
+            that closes the frontmatter.
+
+        Examples:
+            >>> MarkdownNote.split_frontmatter("---\ntitle: A\n---\nBody")
+            ('title: A', 'Body')
+            >>> MarkdownNote.split_frontmatter("No frontmatter")
+            ('', 'No frontmatter')
+            >>> MarkdownNote.split_frontmatter("---\ntitle: A\nnever closed")
+            ('', '---\ntitle: A\nnever closed')
+        """
+        if content.startswith("---"):
+            end_index = content.find("---", 3)
+            if end_index != -1:
+                return content[3:end_index].strip(), content[end_index + 3:].removeprefix("\n")
+        return "", content
+
+    @cached_property
+    def body(self) -> str:
+        """The note's text after its frontmatter, read from the filesystem on first access."""
+        return self.split_frontmatter(self.content)[1]
+
+    @cached_property
+    def body_hash(self) -> str:
+        r"""SHA-256 of the :attr:`body`, as hex.
+
+        It changes when the text of the note changes and does not when only the frontmatter does,
+        which tells a real edit from a change of properties.
+
+        Examples:
+            >>> import tempfile
+            >>> with tempfile.TemporaryDirectory() as tmp:
+            ...     file = Path(tmp) / "a.md"
+            ...     _ = file.write_text("---\ntags: [x]\n---\nHello")
+            ...     one = MarkdownNote(name="a", path="a.md", absolute_path=file).body_hash
+            ...     _ = file.write_text("---\ntags: [y, z]\n---\nHello")      # only the frontmatter changed
+            ...     two = MarkdownNote(name="a", path="a.md", absolute_path=file).body_hash
+            ...     _ = file.write_text("---\ntags: [y, z]\n---\nHello!")     # the text changed
+            ...     three = MarkdownNote(name="a", path="a.md", absolute_path=file).body_hash
+            ...     one == two, two == three
+            (True, False)
+        """
+        return hashlib.sha256(self.body.encode("utf-8")).hexdigest()
+
     def extract_yaml_frontmatter(self, content: str) -> dict[str, Any]:
         r"""Extract and parse the YAML frontmatter of a note.
 
@@ -257,11 +313,7 @@ class MarkdownNote(_VaultLocated):
             >>> note.extract_yaml_frontmatter("---\ntitle: A\nnever closed")
             {}
         """
-        if content.startswith("---"):
-            end_index = content.find("---", 3)
-            if end_index != -1:
-                return self.parse_yaml(content[3:end_index].strip())
-        return {}
+        return self.parse_yaml(self.split_frontmatter(content)[0])
 
     @cached_property
     def frontmatter(self) -> dict[str, Any]:
