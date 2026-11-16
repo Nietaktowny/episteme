@@ -153,7 +153,7 @@ class Migrations:
             rank += 1
             started = time.perf_counter()
             with self.engine.transaction():
-                self.engine.execute_script(migration.sql)
+                self.engine.execute_script(self.engine.render(migration.sql))  # the checksum is of the script as it is in the file
                 self.engine.execute(
                     self.queries["history_insert"],
                     {

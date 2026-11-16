@@ -280,9 +280,10 @@ class TestBundledMigrations:
         assert bundled.migrate() == []
 
     @pytest.mark.parametrize("engine_name", sorted(_ENGINES))
-    def test_every_engine_migrates_cleanly(self, engine_name: str, tmp_path: Path):
-        engine = create_engine(DataSettings(engine=engine_name, url=str(tmp_path / "x.db")))
-        migrations = Migrations(engine, QueryStore(engine.sql_dir / "queries"))
+    def test_every_engine_migrates_cleanly(self, engine_name: str, tmp_path: Path, request: pytest.FixtureRequest):
+        url = request.getfixturevalue("mssql_url") if engine_name == "mssql" else str(tmp_path / "x.db")
+        engine = create_engine(DataSettings(engine=engine_name, url=url, create_database=True))
+        migrations = Migrations(engine, QueryStore(engine.sql_dir / "queries", engine.render))
         assert migrations.migrate() == migrations.available()
         engine.close()
 

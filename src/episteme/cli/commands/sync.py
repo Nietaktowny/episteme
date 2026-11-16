@@ -41,7 +41,7 @@ def sync_anki(ctx: typer.Context) -> None:
 
 
 def checks(episteme: Episteme) -> list[CheckResult]:
-    return [CheckResult(name="database", ok=True, detail=f"{episteme.settings.data.engine} {episteme.settings.data.url}, schema {episteme.data.schema_version}")]
+    return [CheckResult(name="database", ok=True, detail=f"{episteme.settings.data.engine} {episteme.settings.data.display_url}, schema {episteme.data.schema_version}")]
 
 
 extension = Extension(name="sync", app=app, help="Sync systems into the database.", checks=(checks,), order=10)

@@ -6,12 +6,13 @@ values use ``__`` as delimiter, e.g. ``OBSIDIAN__VAULT_ROOT``) or through a
 """
 
 import json
+import re
 from enum import Enum, StrEnum
 from pathlib import Path
 from zoneinfo import ZoneInfo, ZoneInfoNotFoundError
 
 from pydantic_settings import BaseSettings, SettingsConfigDict
-from pydantic import Field, BaseModel, field_validator
+from pydantic import ConfigDict, Field, BaseModel, SecretStr, field_validator
 
 class ObsidianSettings(BaseModel):
     """Settings describing the Obsidian vault Episteme works on.
@@ -108,9 +109,12 @@ class DatabaseEngineName(StrEnum):
     Examples:
         >>> DatabaseEngineName("duckdb")
         <DatabaseEngineName.DUCKDB: 'duckdb'>
+        >>> DatabaseEngineName("mssql")
+        <DatabaseEngineName.MSSQL: 'mssql'>
     """
 
     DUCKDB = "duckdb"
+    MSSQL = "mssql"
 
 class DataSettings(BaseModel):
     """Settings describing where and how Episteme stores its data.
@@ -122,7 +126,25 @@ class DataSettings(BaseModel):
         engine: Database engine to use.
         url: Connection URL of the database. For file-based engines it can
             also be a plain filesystem path, absolute or relative to the
-            working directory.
+            working directory. For ``mssql`` (SQL Server, Azure SQL Database) it is
+            ``mssql://user:password@server.database.windows.net/database``; special characters
+            in the user or password are percent-encoded, or the password is given separately
+            in ``password``.
+        password: Password of the database user, for engines that have one. It overrides any
+            password written in ``url``, so it can be given without encoding it.
+        connect_timeout: Seconds a connection may take, retries included. Azure SQL serverless
+            pauses when idle and needs up to a minute to resume, during which connecting
+            fails with transient errors; the engine retries them until this time has passed.
+        schema_name: Schema the tables, views and functions of Episteme live in (``DATA__SCHEMA``), for SQL Server engines;
+            ``episteme`` by default. Everything of Episteme is created in it and qualified with it, so one database can hold
+            several projects, each in its own schema. It is created if it does not exist (the login needs the ``CREATE SCHEMA``
+            permission for that). DuckDB has no use for it and ignores it.
+        create_database: Whether to create the database named in ``url`` when it does not exist (SQL Server
+            engines). The login must be allowed to create databases (on Azure SQL: the ``dbmanager`` role or the
+            server admin); if it is not, the engine carries on and connecting reports the missing database.
+        create_options: Options of the ``CREATE DATABASE`` statement, to choose what Azure SQL creates, e.g.
+            ``(EDITION = 'GeneralPurpose', SERVICE_OBJECTIVE = 'GP_S_Gen5_1')`` for a serverless database. Empty:
+            the server's default, which on Azure SQL may be a more expensive tier than you want.
 
     Examples:
         >>> settings = DataSettings()
@@ -134,10 +156,65 @@ class DataSettings(BaseModel):
         '/var/lib/episteme/data.duckdb'
         >>> DataSettings(engine="duckdb", url="duckdb:///:memory:").engine
         <DatabaseEngineName.DUCKDB: 'duckdb'>
+
+        The password is kept secret, so it does not show up in logs or when the settings are printed:
+
+        >>> settings = DataSettings(engine="mssql", url="mssql://me@server/db", password="s3cret")
+        >>> "s3cret" in repr(settings), settings.password.get_secret_value()
+        (False, 's3cret')
+
+        One SQL Server database can hold several projects, each in a schema of its own:
+
+        >>> DataSettings().schema_name, DataSettings(schema="dbo").schema_name
+        ('episteme', 'dbo')
+        >>> DataSettings(schema="x]; DROP TABLE y; --")
+        Traceback (most recent call last):
+        ...
+        pydantic_core._pydantic_core.ValidationError: 1 validation error for DataSettings
+        schema
+          Value error, 'x]; DROP TABLE y; --' is not a usable schema name: use letters, digits and underscores, not starting with a digit (and not sys, guest or INFORMATION_SCHEMA). [type=value_error, input_value='x]; DROP TABLE y; --', input_type=str]
+            For further information visit https://errors.pydantic.dev/2.14/v/value_error
     """
 
     engine: DatabaseEngineName = Field(DatabaseEngineName.DUCKDB, description="Database engine to use")
+    model_config = ConfigDict(populate_by_name=True)
+
     url: str = Field("episteme.duckdb", description="Connection URL of the database, or a file path for file-based engines")
+    schema_name: str = Field("episteme", alias="schema", description="Schema of the tables and views of Episteme (SQL Server engines), created if missing")
+    password: SecretStr | None = Field(None, description="Password of the database user (overrides the one in the URL)")
+    create_database: bool = Field(False, description="Create the database named in the URL if it does not exist (SQL Server engines)")
+    create_options: str = Field("", description="Options of CREATE DATABASE, e.g. (EDITION = 'GeneralPurpose', SERVICE_OBJECTIVE = 'GP_S_Gen5_1')")
+    connect_timeout: int = Field(120, gt=0, description="Seconds a connection may take, retries included (Azure SQL serverless needs up to a minute to resume)")
+
+    @property
+    def display_url(self) -> str:
+        """The URL with any password in it hidden, for anything that is shown or logged.
+
+        Examples:
+            >>> DataSettings(url="mssql://me:s3cret@srv/db").display_url
+            'mssql://me:***@srv/db'
+            >>> DataSettings(url="mssql://me@srv/db").display_url
+            'mssql://me@srv/db'
+            >>> DataSettings(url="episteme.duckdb").display_url
+            'episteme.duckdb'
+        """
+        return re.sub(r"(?<=://)([^:/@]*):[^@]*@", r"\1:***@", self.url)
+
+    @field_validator("schema_name")
+    @classmethod
+    def _plain_schema(cls, name: str) -> str:
+        """A schema name is put into SQL, so it is a plain identifier: a letter or underscore, then letters, digits, underscores."""
+        if not re.fullmatch(r"[A-Za-z_][A-Za-z0-9_]{0,127}", name) or name.lower() in {"sys", "information_schema", "guest"}:
+            raise ValueError(f"'{name}' is not a usable schema name: use letters, digits and underscores, not starting with a digit (and not sys, guest or INFORMATION_SCHEMA).")
+        return name
+
+    @field_validator("create_options")
+    @classmethod
+    def _plain_options(cls, options: str) -> str:
+        """Only what the options of CREATE DATABASE are written with: this text is put into the statement."""
+        if options and not re.fullmatch(r"\(\s*\w+\s*=\s*('[\w.\- ]*'|[\w.]+)(\s*,\s*\w+\s*=\s*('[\w.\- ]*'|[\w.]+))*\s*\)", options.strip()):
+            raise ValueError("create_options must look like (EDITION = 'GeneralPurpose', SERVICE_OBJECTIVE = 'GP_S_Gen5_1').")
+        return options.strip()
 
 ALIASES = {"@hourly": "0 * * * *", "@daily": "0 0 * * *", "@weekly": "0 0 * * 0", "@monthly": "0 0 1 * *"}
 """Names for common cron expressions."""
@@ -269,7 +346,7 @@ def example_env(settings: type[BaseSettings] = EpistemeSettings) -> str:
                 value = json.dumps(default)
             else:
                 value = str(default)
-            key = f"{section.upper()}__{name.upper()}"
+            key = f"{section.upper()}__{(sub.alias or name).upper()}"
             if sub.description:
                 lines.append(f"# {sub.description}")
             lines.append(f"{'# ' if default is None else ''}{key}={value}")

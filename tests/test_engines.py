@@ -10,15 +10,41 @@ from episteme.database.engine import _ENGINES, DatabaseEngine, create_engine
 
 # Contract tests run against every registered engine. A new engine only has to be
 # added to _ENGINES and given a connection URL here to be tested the same way.
-ENGINE_URLS = {DatabaseEngineName.DUCKDB: ":memory:"}
+ENGINE_URLS = {DatabaseEngineName.DUCKDB: ":memory:", DatabaseEngineName.MSSQL: "mssql_shared_url"}
+"""A URL, or the name of the fixture that gives one (the engines that need a server)."""
+
+
+DROP_ALL_TABLES = """
+IF @@TRANCOUNT > 0 ROLLBACK;
+DECLARE @sql NVARCHAR(MAX) = N'';
+SELECT @sql += N'DROP TABLE ' + QUOTENAME(SCHEMA_NAME(schema_id)) + N'.' + QUOTENAME(name) + N';' FROM sys.tables;
+EXEC (@sql);
+"""
+
+TEXT_TYPE = {DatabaseEngineName.MSSQL: "NVARCHAR(100)"}
+"""The text column type of the engines that do not spell it TEXT (TEXT is a deprecated type in SQL Server)."""
+
+DELETE_RETURNING = {
+    DatabaseEngineName.DUCKDB: "DELETE FROM items WHERE id < $limit RETURNING id",
+    DatabaseEngineName.MSSQL: "DELETE FROM items OUTPUT deleted.id WHERE id < $limit",
+}
+"""A DELETE that gives back the rows it deleted."""
+
+
+def url_of(request: pytest.FixtureRequest, name: DatabaseEngineName) -> str:
+    """The test URL of an engine."""
+    url = ENGINE_URLS[name]
+    return request.getfixturevalue(url) if url.startswith("mssql") else url
 
 
 @pytest.fixture(params=sorted(_ENGINES), ids=str)
 def engine(request: pytest.FixtureRequest):
     name = request.param
-    engine = create_engine(DataSettings(engine=name, url=ENGINE_URLS[name]))
-    engine.execute("CREATE TABLE items (id INTEGER PRIMARY KEY, label TEXT)")
+    engine = create_engine(DataSettings(engine=name, url=url_of(request, name), create_database=True))  # the test database is new
+    engine.execute(f"CREATE TABLE items (id INTEGER PRIMARY KEY, label {TEXT_TYPE.get(name, 'TEXT')})")
     yield engine
+    if name == DatabaseEngineName.MSSQL:  # the database is shared: leave it empty for the next test
+        engine.execute_script(DROP_ALL_TABLES)
     engine.close()
 
 
@@ -75,7 +101,7 @@ class TestEngineContract:
 
     def test_delete_returning_rows(self, engine: DatabaseEngine):
         fill(engine, 3)
-        deleted = engine.fetch_all("DELETE FROM items WHERE id < $limit RETURNING id", {"limit": 2})
+        deleted = engine.fetch_all(DELETE_RETURNING[DatabaseEngineName(engine.name)], {"limit": 2})
         assert sorted(row["id"] for row in deleted) == [0, 1]
 
     def test_errors_propagate(self, engine: DatabaseEngine):

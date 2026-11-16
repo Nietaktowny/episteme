@@ -1,5 +1,6 @@
 """Store of named SQL queries, kept as ``.sql`` files."""
 
+from collections.abc import Callable
 from importlib.resources.abc import Traversable
 
 
@@ -15,6 +16,8 @@ class QueryStore:
     Args:
         location: Folder with the ``.sql`` files: a path, or a resource folder
             of a package (see :func:`importlib.resources.files`).
+        render: Applied to the text of every query when it is read, e.g. to put a schema name in (see
+            :meth:`episteme.database.engine.DatabaseEngine.render`). Default: the text as it is in the file.
 
     Examples:
         >>> from importlib.resources import files
@@ -27,8 +30,9 @@ class QueryStore:
         False
     """
 
-    def __init__(self, location: Traversable):
+    def __init__(self, location: Traversable, render: Callable[[str], str] | None = None):
         self.location = location
+        self._render = render
         self._cache: dict[str, str] = {}
 
     def __getitem__(self, name: str) -> str:
@@ -47,7 +51,8 @@ class QueryStore:
             resource = self.location.joinpath(f"{name}.sql")
             if not resource.is_file():
                 raise KeyError(f"No query named '{name}' in '{self.location}'.")
-            self._cache[name] = resource.read_text(encoding="utf-8").strip()
+            text = resource.read_text(encoding="utf-8").strip()
+            self._cache[name] = self._render(text) if self._render is not None else text
         return self._cache[name]
 
     def __contains__(self, name: object) -> bool:

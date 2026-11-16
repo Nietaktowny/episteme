@@ -11,6 +11,8 @@ dependencies = [
     "apscheduler>=3.11.3",
     "dotenv>=0.9.9",
     "duckdb>=2.0.0",
+    "mssql>=1.0.1",
+    "pyarrow>=26.0.1",
     "pydantic>=2.14.3",
     "pydantic-settings>=2.16.3",
     "pyyaml>=6.0.3",
@@ -24,6 +26,10 @@ episteme = "episteme.__main__:main"
 [project.optional-dependencies]
 tui = [
     "textual>=8.2.8",
+]
+mssql = [
+    "mssql-python>=1.17.0",
+    "pyarrow>=26.0.1",
 ]
 
 [build-system]

@@ -43,6 +43,7 @@ nav:
   - Home: index.md
   - Command line: cli.md
   - Database views: views.md
+  - Azure SQL: azure-sql.md
   - Anki: anki.md
   - Snapshots: snapshots.md
   - Tasks: tasks.md

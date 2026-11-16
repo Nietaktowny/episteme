@@ -12,6 +12,8 @@
 
 ::: episteme.database._duckdb
 
+::: episteme.database._mssql
+
 ## Migrations
 
 ::: episteme.database.migrations

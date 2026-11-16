@@ -66,7 +66,7 @@ class Database:
         """
         self.settings = settings
         self.engine = engine if engine is not None else create_engine(settings)
-        self.queries = QueryStore(self.engine.sql_dir / "queries")
+        self.queries = QueryStore(self.engine.sql_dir / "queries", self.engine.render)
         self.migrations = Migrations(self.engine, self.queries)
         try:
             self.migrations.migrate()
@@ -378,7 +378,7 @@ class Database:
         types = {row["type"]: row["notes"] for row in self.engine.fetch_all(self.queries["overview_note_types"])}
         anki = self.engine.fetch_one(self.queries["overview_anki"]) or {}
         return Overview(
-            database=DatabaseOverview(engine=str(self.settings.engine), url=self.settings.url,
+            database=DatabaseOverview(engine=str(self.settings.engine), url=self.settings.display_url,
                                       schema_version=self.schema_version, tables=sorted(self.tables())),
             obsidian=ObsidianOverview(**dict(obsidian), note_types=types),
             anki=AnkiOverview(**dict(anki)),
@@ -539,10 +539,20 @@ class Database:
         return self.engine.fetch_one(self.queries["tasks_count"])["count"]
 
     ANKI_BATCH = 20_000
-    """How many rows are sent to the database in one statement when syncing Anki."""
+    """How many rows are sent to the database in one statement when syncing Anki, at most (an engine may take fewer)."""
+
+    @property
+    def _batch_size(self) -> int:
+        return min(self.ANKI_BATCH, self.engine.bulk_rows)
+
+    @staticmethod
+    def _with_lists(row: Row, lists: tuple[str, ...]) -> Row:
+        """A stored row with the list columns that came back as JSON text turned into lists."""
+        return {column: json.loads(value) if column in lists and isinstance(value, str) else value for column, value in row.items()}
 
     def _sync_anki_rows(
         self, rows: Iterable[dict[str, Any]], key: str, select: str, upsert: str, delete: str,
+        lists: tuple[str, ...] = (),
     ) -> AnkiTableChanges:
         """Make one Anki table match ``rows`` exactly; must run inside a transaction.
 
@@ -556,15 +566,17 @@ class Database:
             select: Query of the stored rows, with the same columns.
             upsert: Statement that stores the rows of its ``$rows`` list.
             delete: Statement that deletes the rows of its ``$ids`` list.
+            lists: Columns that hold a list. An engine without a list type stores them as JSON text, which is read back here.
         """
         wanted = {row[key]: row for row in rows}
-        stored = {row[key]: row for row in self.engine.fetch_all(select)}
+        stored = {row[key]: self._with_lists(row, lists) for row in self.engine.fetch_all(select)}
         removed = list(stored.keys() - wanted.keys())
         written = [row for identifier, row in wanted.items() if stored.get(identifier) != row]
         if removed:
             self.engine.execute(delete, {"ids": removed})
-        for start in range(0, len(written), self.ANKI_BATCH):
-            self.engine.execute(upsert, {"rows": written[start:start + self.ANKI_BATCH]})
+        batch = self._batch_size
+        for start in range(0, len(written), batch):
+            self.engine.execute(upsert, {"rows": written[start:start + batch]})
         added = len(wanted.keys() - stored.keys())
         return AnkiTableChanges(
             added=added, updated=len(written) - added, unchanged=len(wanted) - len(written), removed=len(removed),
@@ -625,10 +637,12 @@ class Database:
                 (options.model_dump() for options in source.deck_options()), "options_id",
                 self.queries["anki_deck_options_select"], self.queries["anki_deck_options_upsert"],
                 self.queries["anki_deck_options_delete"],
+                lists=("learn_steps_minutes", "relearn_steps_minutes", "fsrs_params", "easy_days_percentages"),
             )
             notes = self._sync_anki_rows(
                 (note.model_dump() for note in source.notes()), "note_id",
                 self.queries["anki_notes_select"], self.queries["anki_notes_upsert"], self.queries["anki_notes_delete"],
+                lists=("tags",),
             )
             cards = self._sync_anki_rows(
                 (card.model_dump() for card in source.cards()), "card_id",
@@ -661,7 +675,7 @@ class Database:
         batch: list[dict[str, Any]] = []
         for review in source.reviews(after):
             batch.append(review.model_dump())
-            if len(batch) >= self.ANKI_BATCH:
+            if len(batch) >= self._batch_size:
                 self.engine.execute(self.queries["anki_reviews_insert"], {"rows": batch})
                 added, batch = added + len(batch), []
         if batch:

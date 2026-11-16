@@ -25,7 +25,7 @@ def info(ctx: typer.Context) -> None:
     data = state.episteme.data
     summary = {
         "engine": str(data.settings.engine),
-        "url": data.settings.url,
+        "url": data.settings.display_url,
         "schema_version": data.schema_version,
         "tables": sorted(data.tables()),
         "notes": data.count_notes(),

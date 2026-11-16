@@ -23,6 +23,7 @@ Params = Mapping[str, Any]
 
 _ENGINES: dict[DatabaseEngineName, str] = {
     DatabaseEngineName.DUCKDB: "episteme.database._duckdb:DuckDBEngine",
+    DatabaseEngineName.MSSQL: "episteme.database._mssql:MSSQLEngine",
 }
 """Engine classes by name, as ``module:class``. Imported only when used, so
 the driver of an engine nobody selected does not have to be installed."""
@@ -37,9 +38,12 @@ class DatabaseEngine(ABC):
 
     Attributes:
         name: Name of the engine; also the name of its ``sql/<name>/`` folder.
+        bulk_rows: Most rows to send in one statement that stores many.
     """
 
     name: ClassVar[str]
+    bulk_rows: ClassVar[int] = 20_000
+    """How many rows one statement may take when many are stored at once (a list parameter)."""
 
     @classmethod
     @abstractmethod
@@ -50,6 +54,13 @@ class DatabaseEngine(ABC):
     @abstractmethod
     def sql_dir(self) -> Traversable:
         """Folder with this engine's ``queries/`` and ``migrations/``."""
+
+    def render(self, sql: str) -> str:
+        """The SQL of this engine's ``sql/`` files, ready to run: placeholders filled in.
+
+        Most engines have none, so this returns the text as it is; the SQL Server engine puts the schema name in.
+        """
+        return sql
 
     @abstractmethod
     def execute(self, sql: str, params: Params | None = None) -> None:

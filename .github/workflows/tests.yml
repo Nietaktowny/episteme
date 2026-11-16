@@ -17,7 +17,18 @@ concurrency:
 jobs:
   pytest:
     runs-on: ubuntu-latest
-    timeout-minutes: 10
+    timeout-minutes: 15
+    # A SQL Server for the tests of the mssql engine (they skip without one).
+    services:
+      mssql:
+        image: mcr.microsoft.com/mssql/server:2022-latest
+        env:
+          ACCEPT_EULA: "Y"
+          MSSQL_SA_PASSWORD: Episteme_Test1!
+        ports:
+          - 1433:1433
+    env:
+      EPISTEME_TEST_MSSQL_URL: "mssql://sa:Episteme_Test1!@localhost:1433/master"
     steps:
       - uses: actions/checkout@v4
 
@@ -28,7 +39,7 @@ jobs:
       # Installs the project (editable) and its dependency groups, including the dev tools,
       # on the Python version pinned in .python-version. Fails if uv.lock is out of date.
       - name: Install dependencies
-        run: uv sync --locked
+        run: uv sync --locked --extra mssql
 
       # Tests plus the doctests embedded in the source.
       - name: Run tests

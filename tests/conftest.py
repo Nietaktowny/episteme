@@ -3,6 +3,8 @@ from io import StringIO
 import pytest
 from rich.console import Console
 
+from mssql_server import mssql_server, mssql_shared_url, mssql_url  # noqa: F401 - fixtures of the mssql engine
+
 
 @pytest.fixture
 def render():

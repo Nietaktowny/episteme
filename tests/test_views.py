@@ -48,14 +48,8 @@ def rules(database: Database, path: str | None = None) -> set[str]:
     return {row["rule"] for row in rows(database, sql, **({"path": path} if path else {}))}
 
 
-@pytest.fixture(scope="module")
-def world(tmp_path_factory: pytest.TempPathFactory):
-    """A vault following the registry, with a few deliberate mistakes. Read-only: shared by the tests."""
-    root = tmp_path_factory.mktemp("world") / "vault"
-    root.mkdir()
-    clock = Database(DataSettings(url=":memory:"))
-    today: date = clock.engine.fetch_one("SELECT current_date AS today")["today"]  # the database's own idea of today
-    clock.close()
+def make_world(root: Path, today: date) -> None:
+    """Write a vault following the registry, with a few deliberate mistakes, relative to ``today``."""
     ago = lambda days: (today - timedelta(days=days)).isoformat()  # noqa: E731
 
     # Lanes and a roadmap (review cycles)
@@ -107,6 +101,16 @@ def world(tmp_path_factory: pytest.TempPathFactory):
     write(root, "00_Inbox/capture.md", None, body="just a thought")
     write(root, "00_Inbox/untyped.md", "foo: bar")
 
+
+@pytest.fixture(scope="module")
+def world(tmp_path_factory: pytest.TempPathFactory):
+    """A vault following the registry, with a few deliberate mistakes. Read-only: shared by the tests."""
+    root = tmp_path_factory.mktemp("world") / "vault"
+    root.mkdir()
+    clock = Database(DataSettings(url=":memory:"))
+    today: date = clock.engine.fetch_one("SELECT current_date AS today")["today"]  # the database's own idea of today
+    clock.close()
+    make_world(root, today)
     database = build(root)
     database.today = today  # type: ignore[attr-defined]
     database.root = root  # type: ignore[attr-defined]
