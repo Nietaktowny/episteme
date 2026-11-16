@@ -17,6 +17,7 @@ from rich import print
 from episteme.cli import EpistemeSettings
 from episteme.database import Database
 from episteme.obsidian import ObsidianVault
+from episteme.scheduler import EpistemeScheduler
 
 from episteme.models.errors import ErrorInfo
 from episteme.models.sync import ObsidianSyncResult, SyncResult
@@ -63,6 +64,7 @@ class Episteme:
         self.settings: EpistemeSettings = settings if settings is not None else EpistemeSettings()
         self.data = Database(self.settings.data)
         self.obsidian: ObsidianVault = ObsidianVault(self.settings.obsidian)
+        self.scheduler = EpistemeScheduler(self.settings.scheduler)
 
     def sync_obsidian(self) -> ObsidianSyncResult:
         """Map the vault again and bring the database in line with it.
@@ -92,7 +94,6 @@ class Episteme:
         """
         self.obsidian.map()
         result = self.data.sync_notes(self.obsidian)
-        # The vault times its own mapping; reuse that instead of a second stopwatch.
         return result.model_copy(update={"mapping_seconds": self.obsidian.statistics.mapping_duration or 0.0})
 
     def sync(self) -> SyncResult:

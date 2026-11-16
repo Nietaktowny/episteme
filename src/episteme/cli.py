@@ -73,6 +73,9 @@ class DataSettings(BaseModel):
     engine: DatabaseEngineName = Field(DatabaseEngineName.DUCKDB, description="Database engine to use")
     url: str = Field("episteme.duckdb", description="Connection URL of the database, or a file path for file-based engines")
 
+class SchedulerSettings(BaseModel):
+    enabled: bool = Field(True, description="Whether the scheduler is enabled")
+
 class EpistemeSettings(BaseSettings):
     """Top-level Episteme settings.
 
@@ -102,3 +105,4 @@ class EpistemeSettings(BaseSettings):
 
     obsidian: ObsidianSettings = Field(default_factory=ObsidianSettings, description="Obsidian vault settings")
     data: DataSettings = Field(default_factory=DataSettings, description="Database settings")
+    scheduler: SchedulerSettings = Field(default_factory=SchedulerSettings, description="Scheduler settings")
