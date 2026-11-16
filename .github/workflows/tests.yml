@@ -1,0 +1,37 @@
+name: Tests
+
+on:
+  push:
+    branches: [main]
+  pull_request:
+    branches: [main]
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+concurrency:
+  group: tests-${{ github.ref }}
+  cancel-in-progress: true
+
+jobs:
+  pytest:
+    runs-on: ubuntu-latest
+    timeout-minutes: 10
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: astral-sh/setup-uv@v6
+        with:
+          enable-cache: true
+
+      # Installs the project (editable) and its dependency groups, including the dev tools,
+      # on the Python version pinned in .python-version. Fails if uv.lock is out of date.
+      - name: Install dependencies
+        run: uv sync --locked
+
+      # Tests plus the doctests embedded in the source.
+      - name: Run tests
+        run: >-
+          uv run --no-sync pytest tests --doctest-modules src
+          --cov=episteme --cov-branch --cov-report=term-missing
