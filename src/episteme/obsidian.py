@@ -8,7 +8,7 @@ The :class:`ObsidianVault` class scans a vault and builds a tree of
 import os
 import logging
 from collections.abc import Iterator
-from pathlib import Path
+from pathlib import Path, PurePosixPath
 from datetime import datetime
 import time
 from functools import cached_property
@@ -30,13 +30,15 @@ logger = logging.getLogger("episteme")
 class ObsidianVault:
     r"""An Obsidian vault mapped into pydantic models.
 
-    The vault is mapped once, during initialization. Call :meth:`map` again to
-    refresh it after the files on disk changed.
+    Creating a vault does no work: the files are scanned lazily, the first time
+    the contents are needed (``root``, iterating, ``len``, ``vault["name"]``,
+    ``statistics`` ...). Things that only need to know *where* the vault is
+    (``settings``, ``==``, ``hash``, ``repr``, :meth:`attach`) never trigger a
+    scan. Call :meth:`map` to scan again after the files on disk changed.
 
     Attributes:
         settings: Obsidian settings used to locate and map the vault.
-        root: Root directory of the mapped vault.
-        mapped_at: Timestamp of the last mapping.
+        mapped_at: Timestamp of the last mapping, or ``None`` if it was not mapped yet.
 
     Examples:
         >>> import tempfile
@@ -55,7 +57,7 @@ class ObsidianVault:
     """
 
     def __init__(self, settings: ObsidianSettings = None):
-        """Initialize the vault and map it.
+        """Create the vault. Nothing is read from disk until the contents are needed.
 
         Args:
             settings: Obsidian settings to use. When ``None``, the ``obsidian``
@@ -73,15 +75,49 @@ class ObsidianVault:
             0
         """
         self.settings: ObsidianSettings = settings if settings is not None else EpistemeSettings().obsidian
-        self.root: VaultDirectory
-        self.mapped_at: datetime
+        self._root: VaultDirectory | None = None
+        self.mapped_at: datetime | None = None
         self.__mapping_duration: float | None = None
+
+    @property
+    def is_mapped(self) -> bool:
+        """Whether the vault has been scanned yet.
+
+        Examples:
+            >>> import tempfile
+            >>> from episteme.cli import ObsidianSettings
+            >>> with tempfile.TemporaryDirectory() as tmp:
+            ...     _ = (Path(tmp) / "a.md").write_text("A")
+            ...     vault = ObsidianVault(ObsidianSettings(vault_root=tmp))
+            ...     vault.is_mapped
+            ...     len(vault)
+            ...     vault.is_mapped
+            False
+            1
+            True
+        """
+        return self._root is not None
+
+    @property
+    def root(self) -> VaultDirectory:
+        """Root directory of the vault, scanned on first access.
+
+        Raises:
+            FileNotFoundError: On first access, if the vault root does not exist.
+        """
+        if self._root is None:
+            self.map()
+        return self._root
 
     def __repr__(self) -> str:
         """Return a concise representation of the vault.
 
+        Never scans the vault, so it is safe to call from a debugger or a log
+        line: the counts are included only if the vault was mapped already.
+
         Returns:
-            String with the vault root and the number of notes and directories.
+            String with the vault root and, once mapped, the number of notes
+            and directories.
 
         Examples:
             >>> import tempfile
@@ -92,9 +128,15 @@ class ObsidianVault:
             ...     _ = (root / "10_Projects" / "a.md").write_text("A")
             ...     vault = ObsidianVault(ObsidianSettings(vault_root=root))
             ...     repr(vault).replace(str(root), "<root>")
+            ...     _ = vault.root
+            ...     repr(vault).replace(str(root), "<root>")
+            "ObsidianVault(root=PosixPath('<root>'), not mapped yet)"
             "ObsidianVault(root=PosixPath('<root>'), notes=1, directories=1)"
         """
-        return f"ObsidianVault(root={self.root.path!r}, notes={self.root.note_count()}, directories={self.root.directory_count()})"
+        location = f"root={self.settings.vault_root!r}"
+        if self._root is None:
+            return f"ObsidianVault({location}, not mapped yet)"
+        return f"ObsidianVault({location}, notes={self._root.note_count()}, directories={self._root.directory_count()})"
 
     def __rich__(self) -> Table:
         """Render the vault overview as a :class:`rich.table.Table`.
@@ -118,7 +160,7 @@ class ObsidianVault:
         table.add_column("Value", justify="right")
 
         statistics = self.statistics
-        table.add_row("Vault Root", str(self.root.path))
+        table.add_row("Vault Root", str(self.settings.vault_root))
         table.add_row("Mapped At", f"{self.mapped_at:%Y-%m-%d %H:%M:%S}")
         table.add_row("Mapping Duration (s)", f"{statistics.mapping_duration:.2f}" if statistics.mapping_duration is not None else "N/A")
         table.add_row("Total Notes", str(statistics.total_notes))
@@ -144,7 +186,7 @@ class ObsidianVault:
         """
         statistics = self.statistics
         lines = [
-            f"Vault Root: {self.root.path}",
+            f"Vault Root: {self.settings.vault_root}",
             f"Mapped At: {self.mapped_at:%Y-%m-%d %H:%M:%S}",
             f"Total Notes: {statistics.total_notes}",
             f"Total Directories: {statistics.total_directories}",
@@ -172,7 +214,7 @@ class ObsidianVault:
         """
         if not isinstance(other, ObsidianVault):
             return NotImplemented
-        return self.root.path == other.root.path
+        return self.settings.vault_root == other.settings.vault_root
 
     def __hash__(self) -> int:
         """Return a hash value for the vault.
@@ -180,7 +222,7 @@ class ObsidianVault:
         Returns:
             Hash of the vault root path.
         """
-        return hash(self.root.path)
+        return hash(self.settings.vault_root)
     
     def __len__(self) -> int:
         """Return the total number of notes in the vault.
@@ -261,6 +303,17 @@ class ObsidianVault:
                 return note
         raise KeyError(f"No note named '{note_name}' found in the vault.")
 
+    def _relative(self, absolute_path: Path) -> PurePosixPath:
+        """Path of something inside the vault, relative to the vault root.
+
+        Args:
+            absolute_path: Path of a file or directory inside the vault.
+
+        Raises:
+            ValueError: If the path is not inside the vault root.
+        """
+        return PurePosixPath(absolute_path.relative_to(self.settings.vault_root).as_posix())
+
     def _build_markdown_note(self, note_path: Path) -> MarkdownNote:
         r"""Create a :class:`MarkdownNote` for a markdown file.
 
@@ -293,7 +346,8 @@ class ObsidianVault:
         stat = note_path.stat()
         return MarkdownNote(
             name=note_path.stem,
-            path=note_path,
+            path=self._relative(note_path),
+            absolute_path=note_path,
             category_directory=self._get_category_directory(note_path),
             created_at=datetime.fromtimestamp(stat.st_ctime),
             updated_at=datetime.fromtimestamp(stat.st_mtime),
@@ -331,7 +385,7 @@ class ObsidianVault:
             1
             2
         """
-        subdirectory = VaultDirectory(path=dir_path)
+        subdirectory = VaultDirectory(path=self._relative(dir_path), absolute_path=dir_path)
         with os.scandir(dir_path) as notes:
             for note in notes:
                 if note.is_file() and note.name.endswith(".md"):
@@ -403,9 +457,7 @@ class ObsidianVault:
             1
         """
         start_time = time.perf_counter()
-        root = VaultDirectory(
-            path=self.settings.vault_root
-        )
+        root = VaultDirectory(path=PurePosixPath("."), absolute_path=self.settings.vault_root)
         with os.scandir(self.settings.vault_root) as notes:
             for note in notes:
                 if note.is_file() and note.name.endswith(".md"):
@@ -416,7 +468,7 @@ class ObsidianVault:
                     subdirectory = self._map_subdirectory(Path(note.path))
                     root.subdirectories.append(subdirectory)
 
-        self.root = root
+        self._root = root
         self.mapped_at = datetime.now()
         self.__dict__.pop("statistics", None)
 
@@ -485,15 +537,47 @@ class ObsidianVault:
             ...     root = Path(tmp)
             ...     (root / "10_Projects").mkdir()
             ...     vault = ObsidianVault(ObsidianSettings(vault_root=root))
-            ...     vault.get_category_dir(CategoryDirectory.PROJECTS).path == root / "10_Projects"
-            True
+            ...     directory = vault.get_category_dir(CategoryDirectory.PROJECTS)
+            ...     directory.path, directory.absolute_path == root / "10_Projects"
+            (PurePosixPath('10_Projects'), True)
         """
-        directory = self.root.get_dir(self.root.path / category.value)
+        directory = self.root.get_dir(category.value)
         if directory is None:
             raise FileNotFoundError(
                 f"Category directory '{category.value}' not found in the vault."
             )
         return directory
+
+    def attach(self, note: MarkdownNote) -> MarkdownNote:
+        """Give a note that only knows its vault-relative path its location in this vault.
+
+        Notes loaded from the database carry just ``path``, which is relative to
+        the vault root; the root belongs to the vault, so the vault completes
+        them. Afterwards the note can read its ``content``. The note is changed
+        in place and returned.
+
+        Args:
+            note: Note to attach.
+
+        Returns:
+            The same note, with ``absolute_path`` set to ``<vault root>/<note.path>``.
+
+        Examples:
+            >>> import tempfile
+            >>> with tempfile.TemporaryDirectory() as tmp:
+            ...     root = Path(tmp)
+            ...     _ = (root / "a.md").write_text("Hello")
+            ...     vault = ObsidianVault(ObsidianSettings(vault_root=root))
+            ...     loaded = MarkdownNote(name="a", path="a.md")   # as the database returns it
+            ...     loaded.absolute_path is None
+            ...     vault.attach(loaded).content
+            True
+            'Hello'
+            >>> [vault.attach(n) for n in []]
+            []
+        """
+        note.absolute_path = self.settings.vault_root / note.path
+        return note
 
     def _get_newest_template_version(self, template_name: str) -> float | None:
         """Get the newest version of a template note.
@@ -592,7 +676,7 @@ class ObsidianVault:
                 in the target directory.
             ValueError: If ``path`` points outside the vault.
         """
-        vault_root = self.root.path
+        vault_root = self.settings.vault_root
         target_dir = Path(os.path.normpath(vault_root / path))
         if not target_dir.resolve().is_relative_to(vault_root.resolve()):
             raise ValueError(f"Path '{path}' points outside the vault.")
@@ -621,11 +705,11 @@ class ObsidianVault:
             new_note_file.write(content)
 
         new_markdown_note = self._build_markdown_note(new_note_path)
-        parent = self.root.get_dir(target_dir)
+        parent = self.root.get_dir(self._relative(target_dir))
         if parent is None:
             # The directory exists on disk but is not mapped yet; map again to pick it up.
             self.map()
-            parent = self.root.get_dir(target_dir)
+            parent = self.root.get_dir(self._relative(target_dir))
             if parent is not None:
                 new_markdown_note = parent[new_note_name]
         if parent is not None and new_markdown_note not in parent.notes:

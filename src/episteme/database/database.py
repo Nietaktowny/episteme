@@ -2,8 +2,9 @@
 
 import json
 import time
+import unicodedata
 from collections.abc import Iterable, Iterator
-from pathlib import Path
+from pathlib import Path, PurePosixPath
 from typing import Any
 
 from episteme.cli import DataSettings
@@ -23,6 +24,12 @@ class Database:
     :class:`~episteme.database.engine.DatabaseEngine` chosen by
     ``settings.engine``, and the engine supplies the SQL (``sql/<engine>/``).
     The schema is created and updated by migrations when the database opens.
+
+    Notes are stored by their ``MarkdownNote.path``, which is relative to the
+    vault root, so the database holds nothing that depends on the machine and
+    never needs to know where the vault is. A note's ``absolute_path`` is not
+    stored; the vault attaches it again (see
+    :meth:`episteme.obsidian.ObsidianVault.attach`).
 
     Attributes:
         settings: Data settings.
@@ -81,11 +88,28 @@ class Database:
         return [row["name"] for row in self.engine.fetch_all(self.queries["tables"])]
 
     @staticmethod
+    def _key(path: PurePosixPath | Path | str) -> str:
+        """The stored form of a note path: relative to the vault, forward slashes, Unicode NFC.
+
+        Raises:
+            ValueError: If the path is absolute: the database only knows
+                vault-relative paths (use ``MarkdownNote.path``).
+        """
+        candidate = PurePosixPath(path)
+        if candidate.is_absolute():
+            raise ValueError(
+                f"'{path}' is an absolute path; the database stores paths relative to the vault root "
+                "(use MarkdownNote.path)."
+            )
+        return unicodedata.normalize("NFC", candidate.as_posix())
+
+    @staticmethod
     def _note_params(note: MarkdownNote) -> dict[str, Any]:
         """Query parameters that store a note (the ``$name`` parameters of ``note_upsert``).
 
         The note's model fields are used as they are, apart from the path and
-        category, which are stored as text. The frontmatter is added as JSON,
+        category, which are stored as text. ``absolute_path`` is not stored: the
+        model leaves it out of its dump. The frontmatter is added as JSON,
         which reads the note's file if that has not happened yet.
         """
         params = note.model_dump()
@@ -120,9 +144,9 @@ class Database:
             ...     file = Path(tmp) / "idea.md"
             ...     _ = file.write_text("---\\nstatus: draft\\n---\\nBody")
             ...     database = Database(DataSettings(url=":memory:"))
-            ...     note = MarkdownNote(name="idea", path=file)
+            ...     note = MarkdownNote(name="idea", path="idea.md", absolute_path=file)
             ...     database.upsert_note(note)
-            ...     database.get_note(file).frontmatter
+            ...     database.get_note("idea.md").frontmatter
             ...     database.close()
             {'status': 'draft'}
         """
@@ -146,26 +170,31 @@ class Database:
                 self.engine.execute_many(self.queries["note_upsert"], params)
         return len(params)
 
-    def get_note(self, path: Path | str) -> MarkdownNote:
+    def get_note(self, path: PurePosixPath | Path | str) -> MarkdownNote:
         """Get a stored note by its path.
 
         Args:
-            path: Path of the note, as stored (``MarkdownNote.path``).
+            path: Path of the note relative to the vault root (``MarkdownNote.path``).
 
         Returns:
             The note, with its frontmatter loaded from the database.
 
         Raises:
             KeyError: If no note with this path is stored.
+            ValueError: If the path is absolute.
         """
-        row = self.engine.fetch_one(self.queries["note_get"], {"path": str(path)})
+        row = self.engine.fetch_one(self.queries["note_get"], {"path": self._key(path)})
         if row is None:
             raise KeyError(f"Note '{path}' not found in the database.")
         return self._note_from_row(row)
 
-    def has_note(self, path: Path | str) -> bool:
-        """Whether a note with this path is stored."""
-        return self.engine.fetch_one(self.queries["note_exists"], {"path": str(path)}) is not None
+    def has_note(self, path: PurePosixPath | Path | str) -> bool:
+        """Whether a note with this path (relative to the vault root) is stored.
+
+        Raises:
+            ValueError: If the path is absolute.
+        """
+        return self.engine.fetch_one(self.queries["note_exists"], {"path": self._key(path)}) is not None
 
     def iter_notes(self, category_directory: CategoryDirectory | None = None) -> Iterator[MarkdownNote]:
         """Iterate over the stored notes, ordered by path.
@@ -184,28 +213,32 @@ class Database:
         """Number of stored notes."""
         return self.engine.fetch_one(self.queries["notes_count"])["count"]
 
-    def delete_note(self, path: Path | str) -> None:
+    def delete_note(self, path: PurePosixPath | Path | str) -> None:
         """Delete a stored note.
 
         Args:
-            path: Path of the note, as stored (``MarkdownNote.path``).
+            path: Path of the note relative to the vault root (``MarkdownNote.path``).
 
         Raises:
             KeyError: If no note with this path is stored.
+            ValueError: If the path is absolute.
         """
         if self.delete_notes([path]) == 0:
             raise KeyError(f"Note '{path}' not found in the database.")
 
-    def delete_notes(self, paths: Iterable[Path | str]) -> int:
+    def delete_notes(self, paths: Iterable[PurePosixPath | Path | str]) -> int:
         """Delete many stored notes in one statement. Unknown paths are ignored.
 
         Args:
-            paths: Paths of the notes, as stored (``MarkdownNote.path``).
+            paths: Paths of the notes relative to the vault root (``MarkdownNote.path``).
 
         Returns:
             Number of notes actually deleted.
+
+        Raises:
+            ValueError: If a path is absolute.
         """
-        unique_paths = list({str(path) for path in paths})
+        unique_paths = list({self._key(path) for path in paths})
         if not unique_paths:
             return 0
         return len(self.engine.fetch_all(self.queries["notes_delete"], {"paths": unique_paths}))
@@ -254,7 +287,7 @@ class Database:
             ...     for file in files:
             ...         _ = file.write_text("Body")
             ...     database = Database(DataSettings(url=":memory:"))
-            ...     notes = [MarkdownNote(name=file.stem, path=file, size=file.stat().st_size) for file in files]
+            ...     notes = [MarkdownNote(name=f.stem, path=f.name, absolute_path=f, size=f.stat().st_size) for f in files]
             ...     first = database.sync_notes(notes)
             ...     (first.added, first.updated, first.unchanged, first.removed)
             ...     again = database.sync_notes(notes)

@@ -196,9 +196,11 @@ class TestLifecycle:
 
 class TestNotesTable:
     def test_columns_mirror_markdown_note(self, database: Database):
-        model_fields = set(MarkdownNote.model_fields)
-        assert model_fields <= columns(database, "notes")
-        assert columns(database, "notes") - model_fields == {"frontmatter"}
+        # Every stored model field has a column; where the file is on this machine is not stored.
+        stored_fields = set(MarkdownNote.model_fields) - {"absolute_path"}
+        assert stored_fields <= columns(database, "notes")
+        assert columns(database, "notes") - stored_fields == {"frontmatter"}
+        assert "absolute_path" not in columns(database, "notes")
 
     def test_no_frontmatter_property_is_a_column(self, database: Database):
         assert not {"type", "created", "domain", "status", "tags"} & columns(database, "notes")

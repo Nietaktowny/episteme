@@ -66,7 +66,7 @@ class TestSyncObsidian:
 
     def test_database_holds_what_the_vault_holds(self, episteme: Episteme, vault_root: Path):
         episteme.sync_obsidian()
-        assert episteme.data.get_note(vault_root / "a.md").frontmatter == {"status": "draft"}
+        assert episteme.data.get_note("a.md").frontmatter == {"status": "draft"}
 
     def test_raises_when_something_fails(self, episteme: Episteme, monkeypatch: pytest.MonkeyPatch):
         monkeypatch.setattr(episteme.data, "sync_notes", lambda notes: (_ for _ in ()).throw(RuntimeError("boom")))
@@ -122,12 +122,12 @@ class TestSync:
         assert "Syncing the Obsidian vault failed" in caplog.text
         assert "RuntimeError: boom" in caplog.text
 
-    def test_a_real_database_failure_leaves_the_database_untouched(self, episteme: Episteme, vault_root: Path):
+    def test_files_that_vanished_are_simply_removed(self, episteme: Episteme, vault_root: Path):
         episteme.sync()
         (vault_root / "a.md").unlink()  # a stored note whose file is gone...
         episteme.obsidian.map()
         ghost = episteme.obsidian["b"]
-        ghost.path.unlink()  # ...and a mapped note that cannot be read any more
+        ghost.absolute_path.unlink()  # ...and a mapped note that cannot be read any more
         result = episteme.sync()
         assert result.ok  # mapping happens again inside sync, so the vanished files are simply gone
         assert result.obsidian.removed == 2

@@ -313,7 +313,8 @@ class TestLegacyDatabase:
     def test_data_is_kept(self, legacy_settings: DataSettings):
         with Database(legacy_settings) as database:
             assert database.count_notes() == 1
-            assert database.get_note("/vault/a.md").frontmatter == {"status": "draft"}
+            row = database.engine.fetch_one("SELECT path, frontmatter->>'status' AS status FROM notes")
+            assert row == {"path": "/vault/a.md", "status": "draft"}
 
     def test_is_brought_under_migration_control(self, legacy_settings: DataSettings):
         with Database(legacy_settings) as database:

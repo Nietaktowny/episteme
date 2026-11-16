@@ -1,5 +1,5 @@
 from datetime import datetime
-from pathlib import Path
+from pathlib import Path, PurePosixPath
 
 import duckdb
 import pytest
@@ -34,7 +34,7 @@ def database(tmp_path: Path):
 
 def make_note(path: Path, **fields) -> MarkdownNote:
     path.write_text(fields.pop("text", "Body"), encoding="utf-8")
-    return MarkdownNote(name=path.stem, path=path, **fields)
+    return MarkdownNote(name=path.stem, path=path.name, absolute_path=path, **fields)
 
 
 class TestUpsertAndGet:
@@ -42,9 +42,10 @@ class TestUpsertAndGet:
         original = vault["a"]
         expected = original.model_dump()  # before storing: storing reads the file
         database.upsert_note(original)
-        stored = database.get_note(vault_root / "a.md")
+        stored = database.get_note("a.md")
         assert stored.model_dump() == expected
-        assert set(expected) == set(MarkdownNote.model_fields)
+        # Everything the model has is stored, except where the file is on this machine.
+        assert set(expected) | {"absolute_path"} == set(MarkdownNote.model_fields)
 
     def test_optional_fields_round_trip(self, database: Database, tmp_path: Path):
         note = make_note(
@@ -62,44 +63,48 @@ class TestUpsertAndGet:
 
     def test_returns_markdown_note_with_typed_fields(self, database: Database, vault: ObsidianVault, vault_root: Path):
         database.upsert_note(vault["p"])
-        stored = database.get_note(vault_root / "10_Projects" / "p.md")
+        stored = database.get_note("10_Projects/p.md")
         assert isinstance(stored, MarkdownNote)
-        assert isinstance(stored.path, Path)
+        assert isinstance(stored.path, PurePosixPath)
+        assert stored.absolute_path is None  # the database never knew where the vault is
         assert stored.category_directory is CategoryDirectory.PROJECTS
 
     def test_frontmatter_stored_and_cached_without_reading_file(self, database: Database, vault: ObsidianVault, vault_root: Path):
         database.upsert_note(vault["a"])
         (vault_root / "a.md").unlink()
-        stored = database.get_note(vault_root / "a.md")
+        stored = database.get_note("a.md")
         assert stored.frontmatter["status"] == "draft"
         assert "content" not in stored.__dict__
 
-    def test_content_stays_lazy_and_reads_the_file(self, database: Database, vault: ObsidianVault, vault_root: Path):
+    def test_content_needs_the_vault_to_attach_the_note(self, database: Database, vault: ObsidianVault):
         database.upsert_note(vault["a"])
-        stored = database.get_note(vault_root / "a.md")
+        stored = database.get_note("a.md")
         assert "content" not in stored.__dict__
-        assert stored.content.endswith("Zażółć")
+        with pytest.raises(RuntimeError, match="not attached to a vault"):
+            _ = stored.content
+        assert vault.attach(stored).content.endswith("Zażółć")
 
     def test_times_and_dates_in_frontmatter_become_text(self, database: Database, vault: ObsidianVault, vault_root: Path):
         database.upsert_note(vault["a"])
-        frontmatter = database.get_note(vault_root / "a.md").frontmatter
+        frontmatter = database.get_note("a.md").frontmatter
         assert frontmatter["at"] == "12:00"
         assert frontmatter["when"] == "2027-01-02"
 
     def test_note_without_frontmatter(self, database: Database, vault: ObsidianVault, vault_root: Path):
         database.upsert_note(vault["plain"])
-        assert database.get_note(vault_root / "plain.md").frontmatter == {}
+        assert database.get_note("plain.md").frontmatter == {}
 
-    def test_path_accepts_str_and_path(self, database: Database, vault: ObsidianVault, vault_root: Path):
+    def test_path_accepts_str_and_path_objects(self, database: Database, vault: ObsidianVault):
         database.upsert_note(vault["a"])
-        assert database.get_note(str(vault_root / "a.md")).name == "a"
-        assert database.get_note(vault_root / "a.md").name == "a"
+        assert database.get_note("a.md").name == "a"
+        assert database.get_note(PurePosixPath("a.md")).name == "a"
+        assert database.get_note(Path("a.md")).name == "a"
 
     def test_upsert_updates_existing(self, database: Database, tmp_path: Path):
         path = tmp_path / "n.md"
         database.upsert_note(make_note(path, text="---\nstatus: draft\n---\nx", size=1))
         database.upsert_note(make_note(path, text="---\nstatus: done\n---\nx", size=2, is_archived=True))
-        stored = database.get_note(path)
+        stored = database.get_note(path.name)
         assert database.count_notes() == 1
         assert (stored.size, stored.is_archived, stored.frontmatter) == (2, True, {"status": "done"})
 
@@ -110,17 +115,17 @@ class TestUpsertAndGet:
 
     def test_missing_note_raises_key_error(self, database: Database, tmp_path: Path):
         with pytest.raises(KeyError, match="nope.md"):
-            database.get_note(tmp_path / "nope.md")
+            database.get_note("nope.md")
 
     def test_unreadable_file_raises_and_stores_nothing(self, database: Database, tmp_path: Path):
         with pytest.raises(FileNotFoundError):
-            database.upsert_note(MarkdownNote(name="ghost", path=tmp_path / "ghost.md"))
+            database.upsert_note(MarkdownNote(name="ghost", path="ghost.md", absolute_path=tmp_path / "ghost.md"))
         assert database.count_notes() == 0
 
     def test_has_note(self, database: Database, vault: ObsidianVault, vault_root: Path):
         database.upsert_note(vault["a"])
-        assert database.has_note(vault_root / "a.md")
-        assert not database.has_note(vault_root / "nope.md")
+        assert database.has_note("a.md")
+        assert not database.has_note("nope.md")
 
 
 class TestUpsertNotes:
@@ -141,7 +146,7 @@ class TestUpsertNotes:
         assert database.count_notes() == 1
 
     def test_all_or_nothing(self, database: Database, vault: ObsidianVault, tmp_path: Path):
-        ghost = MarkdownNote(name="ghost", path=tmp_path / "ghost.md")
+        ghost = MarkdownNote(name="ghost", path="ghost.md", absolute_path=tmp_path / "ghost.md")
         with pytest.raises(FileNotFoundError):
             database.upsert_notes([*vault.root.iter_notes(), ghost])
         assert database.count_notes() == 0
@@ -185,22 +190,22 @@ class TestDelete:
         database.upsert_notes(vault.root.iter_notes())
 
     def test_delete_note(self, database: Database, vault_root: Path):
-        database.delete_note(vault_root / "a.md")
-        assert not database.has_note(vault_root / "a.md")
+        database.delete_note("a.md")
+        assert not database.has_note("a.md")
         assert database.count_notes() == 2
 
     def test_delete_missing_note_raises(self, database: Database, vault_root: Path):
         with pytest.raises(KeyError):
-            database.delete_note(vault_root / "nope.md")
+            database.delete_note("nope.md")
         assert database.count_notes() == 3
 
     def test_delete_twice_raises_second_time(self, database: Database, vault_root: Path):
-        database.delete_note(vault_root / "a.md")
+        database.delete_note("a.md")
         with pytest.raises(KeyError):
-            database.delete_note(vault_root / "a.md")
+            database.delete_note("a.md")
 
     def test_delete_notes_counts_only_existing(self, database: Database, vault_root: Path):
-        deleted = database.delete_notes([vault_root / "a.md", vault_root / "nope.md", vault_root / "a.md"])
+        deleted = database.delete_notes(["a.md", "nope.md", "a.md"])
         assert deleted == 1
         assert database.count_notes() == 2
 
@@ -209,7 +214,7 @@ class TestDelete:
         assert database.count_notes() == 3
 
     def test_delete_notes_accepts_str_and_path(self, database: Database, vault_root: Path):
-        assert database.delete_notes([str(vault_root / "a.md"), vault_root / "plain.md"]) == 2
+        assert database.delete_notes(["a.md", "plain.md"]) == 2
 
     def test_clear_notes(self, database: Database):
         assert database.clear_notes() == 3
@@ -220,9 +225,9 @@ class TestDelete:
         assert database.clear_notes() == 0
 
     def test_can_reinsert_after_delete(self, database: Database, vault: ObsidianVault, vault_root: Path):
-        database.delete_note(vault_root / "a.md")
+        database.delete_note("a.md")
         database.upsert_note(vault["a"])
-        assert database.has_note(vault_root / "a.md")
+        assert database.has_note("a.md")
 
 
 def counts(result: ObsidianSyncResult) -> tuple[int, int, int, int]:
@@ -262,9 +267,9 @@ class TestSyncNotes:
         result = database.sync_notes(vault.root.iter_notes())
         assert counts(result) == (1, 1, 1, 1)  # new / a / p / plain
         assert (result.changed, result.total) == (3, 3)
-        assert database.get_note(vault_root / "a.md").frontmatter == {"status": "done"}
-        assert database.has_note(vault_root / "new.md")
-        assert not database.has_note(vault_root / "plain.md")
+        assert database.get_note("a.md").frontmatter == {"status": "done"}
+        assert database.has_note("new.md")
+        assert not database.has_note("plain.md")
 
     def test_untouched_notes_are_not_written_again(self, database: Database, vault: ObsidianVault, vault_root: Path, monkeypatch: pytest.MonkeyPatch):
         database.sync_notes(vault.root.iter_notes())
@@ -295,7 +300,7 @@ class TestSyncNotes:
         path = tmp_path / "n.md"
         path.write_text("Body", encoding="utf-8")
         base = MarkdownNote(
-            name="n", path=path, size=4,
+            name="n", path=path.name, absolute_path=path, size=4,
             created_at=datetime(2027, 1, 1), updated_at=datetime(2027, 1, 2),
         )
         database.sync_notes([base])
@@ -303,7 +308,7 @@ class TestSyncNotes:
 
     def test_frontmatter_alone_counts_as_a_change(self, database: Database, tmp_path: Path):
         path = tmp_path / "n.md"
-        fixed = dict(name="n", path=path, size=14, created_at=datetime(2027, 1, 1), updated_at=datetime(2027, 1, 2))
+        fixed = dict(name="n", path=path.name, absolute_path=path, size=14, created_at=datetime(2027, 1, 1), updated_at=datetime(2027, 1, 2))
         path.write_text("---\nk: aaaa\n---\n", encoding="utf-8")
         database.sync_notes([MarkdownNote(**fixed)])
         path.write_text("---\nk: bbbb\n---\n", encoding="utf-8")  # same size, same timestamps
@@ -315,7 +320,7 @@ class TestSyncNotes:
             "---\ntitle: Zażółć\ntags: [a, b]\nnested:\n  deep: {x: 1.5, y: null}\nwhen: 2027-01-02\n---\nB",
             encoding="utf-8",
         )
-        fixed = dict(name="n", path=path, size=path.stat().st_size, created_at=datetime(2027, 1, 1), updated_at=datetime(2027, 1, 2))
+        fixed = dict(name="n", path=path.name, absolute_path=path, size=path.stat().st_size, created_at=datetime(2027, 1, 1), updated_at=datetime(2027, 1, 2))
         database.sync_notes([MarkdownNote(**fixed)])
         assert counts(database.sync_notes([MarkdownNote(**fixed)])) == (0, 0, 1, 0)
 
@@ -340,12 +345,12 @@ class TestSyncNotes:
         first = make_note(path, size=1)
         second = make_note(path, size=2)
         assert counts(database.sync_notes([first, second])) == (1, 0, 0, 0)
-        assert database.get_note(path).size == 2
+        assert database.get_note(path.name).size == 2
 
     def test_failure_changes_nothing(self, database: Database, vault: ObsidianVault, tmp_path: Path):
         database.sync_notes(vault.root.iter_notes())
         before = sorted(str(n.path) for n in database.iter_notes())
-        ghost = MarkdownNote(name="ghost", path=tmp_path / "ghost.md")
+        ghost = MarkdownNote(name="ghost", path="ghost.md", absolute_path=tmp_path / "ghost.md")
         with pytest.raises(FileNotFoundError):
             database.sync_notes([ghost])
         assert sorted(str(n.path) for n in database.iter_notes()) == before
@@ -361,7 +366,7 @@ class TestSyncNotes:
         assert not database.has_note(too_big.path)
 
     def test_transaction_is_closed_after_failure(self, database: Database, vault: ObsidianVault, tmp_path: Path):
-        ghost = MarkdownNote(name="ghost", path=tmp_path / "ghost.md")
+        ghost = MarkdownNote(name="ghost", path="ghost.md", absolute_path=tmp_path / "ghost.md")
         with pytest.raises(FileNotFoundError):
             database.sync_notes([ghost])
         # a leaked open transaction would make this fail

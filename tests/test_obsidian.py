@@ -2,9 +2,10 @@ import logging
 import os
 import time
 from datetime import date, datetime
-from pathlib import Path
+from pathlib import Path, PurePosixPath
 
 import pytest
+from pydantic import ValidationError
 from rich.table import Table
 
 from episteme import Episteme
@@ -37,7 +38,9 @@ def vault_root(tmp_path: Path) -> Path:
 
 @pytest.fixture
 def empty_vault(vault_root: Path) -> ObsidianVault:
-    return ObsidianVault(make_settings(vault_root))
+    vault = ObsidianVault(make_settings(vault_root))
+    vault.map()  # mapping is lazy: scan now, before other fixtures add files to the same folder
+    return vault
 
 
 @pytest.fixture
@@ -54,12 +57,14 @@ def populated_root(vault_root: Path) -> Path:
 
 @pytest.fixture
 def populated_vault(populated_root: Path) -> ObsidianVault:
-    return ObsidianVault(make_settings(populated_root))
+    vault = ObsidianVault(make_settings(populated_root))
+    vault.map()
+    return vault
 
 
 @pytest.fixture
 def note(vault_root: Path) -> MarkdownNote:
-    return MarkdownNote(name="n", path=vault_root / "n.md")
+    return MarkdownNote(name="n", path="n.md")
 
 
 def find_dir(directory: VaultDirectory, name: str) -> VaultDirectory:
@@ -86,16 +91,18 @@ class TestInit:
         assert isinstance(vault.settings, ObsidianSettings)
         assert vault.settings.vault_root == vault_root
 
-    def test_missing_vault_root_raises(self, tmp_path: Path):
+    def test_missing_vault_root_does_not_raise_until_the_vault_is_used(self, tmp_path: Path):
+        vault = ObsidianVault(make_settings(tmp_path / "does-not-exist"))  # creating it reads nothing
         with pytest.raises(FileNotFoundError):
-            ObsidianVault(make_settings(tmp_path / "does-not-exist"))
+            _ = vault.root
 
 
 class TestMap:
     def test_empty_vault(self, empty_vault: ObsidianVault):
         assert empty_vault.root.note_count() == 0
         assert empty_vault.root.directory_count() == 0
-        assert empty_vault.root.path == empty_vault.settings.vault_root
+        assert empty_vault.root.absolute_path == empty_vault.settings.vault_root
+        assert empty_vault.root.path == PurePosixPath(".")
 
     def test_counts(self, populated_vault: ObsidianVault):
         # inbox, idea, nested, book
@@ -142,8 +149,9 @@ class TestMap:
         assert populated_vault.mapped_at >= old_mapped_at
 
     def test_logs_mapping(self, populated_root: Path, caplog: pytest.LogCaptureFixture):
+        vault = ObsidianVault(make_settings(populated_root))
         with caplog.at_level(logging.INFO, logger="episteme"):
-            ObsidianVault(make_settings(populated_root))
+            vault.map()
         assert "Mapped Obsidian vault" in caplog.text
         assert "4 notes in 3 directories" in caplog.text
 
@@ -341,7 +349,8 @@ class TestCategoryDirectory:
 class TestMapSubdirectory:
     def test_maps_notes_and_subdirectories(self, populated_vault: ObsidianVault, populated_root: Path):
         directory = populated_vault._map_subdirectory(populated_root / "10_Projects")
-        assert directory.path == populated_root / "10_Projects"
+        assert directory.path == PurePosixPath("10_Projects")
+        assert directory.absolute_path == populated_root / "10_Projects"
         assert [n.name for n in directory.notes] == ["idea"]
         assert [d.path.name for d in directory.subdirectories] == ["deep"]
         assert directory.note_count() == 2
@@ -393,13 +402,13 @@ class TestRendering:
     def test_rich_table_values(self, populated_vault: ObsidianVault):
         table = populated_vault.__rich__()
         values = list(table.columns[1].cells)
-        assert str(populated_vault.root.path) in values
+        assert str(populated_vault.root.absolute_path) in values
         assert "4" in values
         assert "3" in values
 
     def test_str(self, populated_vault: ObsidianVault):
         lines = str(populated_vault).splitlines()
-        assert lines[0] == f"Vault Root: {populated_vault.root.path}"
+        assert lines[0] == f"Vault Root: {populated_vault.root.absolute_path}"
         assert lines[1].startswith("Mapped At: ")
         assert lines[2] == "Total Notes: 4"
         assert lines[3] == "Total Directories: 3"
@@ -413,7 +422,7 @@ class TestRendering:
 
 class TestVaultDirectoryIterNotes:
     def test_empty(self, vault_root: Path):
-        assert list(VaultDirectory(path=vault_root).iter_notes()) == []
+        assert list(VaultDirectory(path=".").iter_notes()) == []
 
     def test_includes_nested_notes(self, populated_vault: ObsidianVault):
         names = {n.name for n in populated_vault.root.iter_notes()}
@@ -479,6 +488,7 @@ class TestIter:
 
     def test_iteration_does_not_read_files(self, populated_root: Path):
         vault = ObsidianVault(make_settings(populated_root))
+        vault.map()
         for path in populated_root.rglob("*.md"):
             path.unlink()
         assert len(list(vault)) == 4
@@ -498,7 +508,7 @@ class TestContains:
         assert nested in populated_vault
 
     def test_foreign_note_not_contained(self, populated_vault: ObsidianVault, vault_root: Path):
-        foreign = MarkdownNote(name="ghost", path=vault_root / "ghost.md")
+        foreign = MarkdownNote(name="ghost", path="ghost.md")
         assert foreign not in populated_vault
 
     def test_not_contained_in_empty_vault(self, empty_vault: ObsidianVault, populated_vault: ObsidianVault):
@@ -558,7 +568,7 @@ class TestGetItem:
 class TestRepr:
     def test_format(self, populated_vault: ObsidianVault):
         assert repr(populated_vault) == (
-            f"ObsidianVault(root={populated_vault.root.path!r}, notes=4, directories=3)"
+            f"ObsidianVault(root={populated_vault.root.absolute_path!r}, notes=4, directories=3)"
         )
 
     def test_empty(self, empty_vault: ObsidianVault):
@@ -575,7 +585,7 @@ class TestEqualityAndHash:
         assert ObsidianVault(make_settings(vault_root)) != ObsidianVault(make_settings(other))
 
     def test_not_equal_to_other_types(self, empty_vault: ObsidianVault):
-        assert empty_vault != str(empty_vault.root.path)
+        assert empty_vault != str(empty_vault.root.absolute_path)
         assert empty_vault != empty_vault.root
         assert (empty_vault == 1) is False
 
@@ -606,7 +616,9 @@ def template_root(vault_root: Path) -> Path:
 
 @pytest.fixture
 def template_vault(template_root: Path) -> ObsidianVault:
-    return ObsidianVault(make_settings(template_root))
+    vault = ObsidianVault(make_settings(template_root))
+    vault.map()
+    return vault
 
 
 class TestVaultDirectoryGetItem:
@@ -627,28 +639,28 @@ class TestVaultDirectoryGetItem:
 
 
 class TestGetDir:
-    def test_root_itself(self, populated_vault: ObsidianVault, populated_root: Path):
-        assert populated_vault.root.get_dir(populated_root) is populated_vault.root
+    def test_root_itself(self, populated_vault: ObsidianVault):
+        assert populated_vault.root.get_dir(".") is populated_vault.root
 
     def test_direct_subdirectory(self, populated_vault: ObsidianVault, populated_root: Path):
-        found = populated_vault.root.get_dir(populated_root / "10_Projects")
+        found = populated_vault.root.get_dir("10_Projects")
         assert found is find_dir(populated_vault.root, "10_Projects")
 
     def test_nested_subdirectory(self, populated_vault: ObsidianVault, populated_root: Path):
-        found = populated_vault.root.get_dir(populated_root / "10_Projects" / "deep")
+        found = populated_vault.root.get_dir("10_Projects/deep")
         assert found is not None
         assert found.path.name == "deep"
 
     def test_missing_returns_none(self, populated_vault: ObsidianVault, populated_root: Path):
-        assert populated_vault.root.get_dir(populated_root / "nope") is None
+        assert populated_vault.root.get_dir("nope") is None
 
     def test_skipped_directory_returns_none(self, populated_vault: ObsidianVault, populated_root: Path):
-        assert populated_vault.root.get_dir(populated_root / ".obsidian") is None
+        assert populated_vault.root.get_dir(".obsidian") is None
 
     def test_searches_from_subdirectory(self, populated_vault: ObsidianVault, populated_root: Path):
         projects = find_dir(populated_vault.root, "10_Projects")
-        assert projects.get_dir(populated_root / "30_Resources") is None
-        assert projects.get_dir(populated_root / "10_Projects" / "deep") is not None
+        assert projects.get_dir("30_Resources") is None
+        assert projects.get_dir("10_Projects/deep") is not None
 
 
 class TestGetCategoryDir:
@@ -658,7 +670,8 @@ class TestGetCategoryDir:
             write(populated_root / "00_Inbox" / "x.md")
             populated_vault.map()
         directory = populated_vault.get_category_dir(category)
-        assert directory.path == populated_root / category.value
+        assert directory.path == PurePosixPath(category.value)
+        assert directory.absolute_path == populated_root / category.value
         assert directory is find_dir(populated_vault.root, category.value)
 
     def test_includes_nested_notes(self, populated_vault: ObsidianVault):
@@ -741,7 +754,8 @@ class TestCreateFromTemplate:
         note = template_vault.create_from_template("weekly_review_template", "review")
         assert isinstance(note, MarkdownNote)
         assert note.name == "review"
-        assert note.path == template_root / "review.md"
+        assert note.path == PurePosixPath("review.md")
+        assert note.absolute_path == template_root / "review.md"
         assert note.category_directory == CategoryDirectory.INBOX
 
     def test_frontmatter_copied(self, template_vault: ObsidianVault):
@@ -891,7 +905,9 @@ DAILY_TEMPLATE = (
 def daily_vault(vault_root: Path) -> ObsidianVault:
     write(vault_root / "99_Templates" / "v1.0_daily.md", DAILY_TEMPLATE)
     (vault_root / "00_Inbox" / "daily_log").mkdir(parents=True)
-    return ObsidianVault(make_settings(vault_root))
+    vault = ObsidianVault(make_settings(vault_root))
+    vault.map()
+    return vault
 
 
 class TestCreateFromTemplatePlaceholders:
@@ -957,16 +973,19 @@ class TestCreateFromTemplatePlaceholders:
 class TestCreateFromTemplatePath:
     def test_default_path_is_vault_root(self, daily_vault: ObsidianVault, vault_root: Path):
         note = daily_vault.create_from_template("daily", "n")
-        assert note.path == vault_root / "n.md"
+        assert note.path == PurePosixPath("n.md")
+        assert note.absolute_path == vault_root / "n.md"
 
     def test_nested_path(self, daily_vault: ObsidianVault, vault_root: Path):
         note = daily_vault.create_from_template("daily", "n", path="00_Inbox/daily_log")
-        assert note.path == vault_root / "00_Inbox" / "daily_log" / "n.md"
-        assert note.path.exists()
+        assert note.path == PurePosixPath("00_Inbox/daily_log/n.md")
+        assert note.absolute_path == vault_root / "00_Inbox" / "daily_log" / "n.md"
+        assert note.absolute_path.exists()
 
     def test_path_accepts_pathlib(self, daily_vault: ObsidianVault, vault_root: Path):
         note = daily_vault.create_from_template("daily", "n", path=Path("00_Inbox/daily_log"))
-        assert note.path.parent == vault_root / "00_Inbox" / "daily_log"
+        assert note.path.parent == PurePosixPath("00_Inbox/daily_log")
+        assert note.absolute_path.parent == vault_root / "00_Inbox" / "daily_log"
 
     def test_category_from_path(self, daily_vault: ObsidianVault, vault_root: Path):
         (vault_root / "10_Projects").mkdir()
@@ -981,7 +1000,7 @@ class TestCreateFromTemplatePath:
 
     def test_note_registered_in_its_own_directory(self, daily_vault: ObsidianVault, vault_root: Path):
         note = daily_vault.create_from_template("daily", "n", path="00_Inbox/daily_log")
-        directory = daily_vault.root.get_dir(vault_root / "00_Inbox" / "daily_log")
+        directory = daily_vault.root.get_dir("00_Inbox/daily_log")
         assert note in directory.notes
         assert note not in daily_vault.root.notes
 
@@ -999,7 +1018,7 @@ class TestCreateFromTemplatePath:
     def test_same_name_in_different_directories_allowed(self, daily_vault: ObsidianVault, vault_root: Path):
         daily_vault.create_from_template("daily", "n", path="00_Inbox/daily_log")
         note = daily_vault.create_from_template("daily", "n")
-        assert note.path == vault_root / "n.md"
+        assert note.path == PurePosixPath("n.md")
 
     @pytest.mark.parametrize("escape", ["..", "../outside", "00_Inbox/../.."])
     def test_path_outside_vault_rejected(self, daily_vault: ObsidianVault, vault_root: Path, escape: str):
@@ -1020,7 +1039,7 @@ class TestCreateFromTemplateUnmappedDirectory:
     def test_directory_created_after_mapping_is_picked_up(self, daily_vault: ObsidianVault, vault_root: Path):
         (vault_root / "10_Projects").mkdir()
         note = daily_vault.create_from_template("daily", "n", path="10_Projects")
-        directory = daily_vault.root.get_dir(vault_root / "10_Projects")
+        directory = daily_vault.root.get_dir("10_Projects")
         assert directory is not None
         assert [n.name for n in directory.notes] == ["n"]
         assert daily_vault["n"] is note
@@ -1030,13 +1049,15 @@ class TestCreateFromTemplateUnmappedDirectory:
         (vault_root / ".obsidian").mkdir()
         with caplog.at_level(logging.WARNING, logger="episteme"):
             note = daily_vault.create_from_template("daily", "n", path=".obsidian")
-        assert note.path == vault_root / ".obsidian" / "n.md"
+        assert note.path == PurePosixPath(".obsidian/n.md")
+        assert note.absolute_path == vault_root / ".obsidian" / "n.md"
         assert note not in daily_vault
         assert "not part of the mapped vault" in caplog.text
 
     def test_dot_segments_inside_vault_are_allowed(self, daily_vault: ObsidianVault, vault_root: Path):
         note = daily_vault.create_from_template("daily", "n", path="00_Inbox/../00_Inbox/daily_log")
-        assert note.path == vault_root / "00_Inbox" / "daily_log" / "n.md"
+        assert note.path == PurePosixPath("00_Inbox/daily_log/n.md")
+        assert note.absolute_path == vault_root / "00_Inbox" / "daily_log" / "n.md"
 
     def test_symlink_escaping_vault_rejected(self, daily_vault: ObsidianVault, vault_root: Path, tmp_path: Path):
         outside = tmp_path / "outside"
@@ -1086,3 +1107,113 @@ class TestEpistemeSettingsWiring:
         assert episteme.obsidian.settings.vault_root == vault_root
         assert episteme.data.settings.url == str(tmp_path / "env.duckdb")
         assert (tmp_path / "env.duckdb").exists()
+
+
+class TestVaultKnowsBothPaths:
+    """The vault owns the root: it sets the relative path and the absolute one."""
+
+    def test_notes_have_relative_and_absolute_paths(self, populated_vault: ObsidianVault, populated_root: Path):
+        for note in populated_vault:
+            assert not note.path.is_absolute()
+            assert note.absolute_path == populated_root / note.path
+            assert note.absolute_path.is_file()
+
+    def test_exact_relative_paths(self, populated_vault: ObsidianVault):
+        assert {str(n.path) for n in populated_vault} == {
+            "inbox.md", "10_Projects/idea.md", "10_Projects/deep/nested.md", "30_Resources/book.md",
+        }
+
+    def test_the_root_directory(self, populated_vault: ObsidianVault, populated_root: Path):
+        assert populated_vault.root.path == PurePosixPath(".")
+        assert populated_vault.root.absolute_path == populated_root
+
+    def test_subdirectories_have_both_paths(self, populated_vault: ObsidianVault, populated_root: Path):
+        projects = find_dir(populated_vault.root, "10_Projects")
+        deep = find_dir(projects, "deep")
+        assert (projects.path, deep.path) == (PurePosixPath("10_Projects"), PurePosixPath("10_Projects/deep"))
+        assert deep.absolute_path == populated_root / "10_Projects" / "deep"
+
+    def test_category_comes_from_the_relative_path(self, populated_vault: ObsidianVault):
+        assert populated_vault["nested"].category_directory is CategoryDirectory.PROJECTS
+
+    def test_nothing_absolute_in_a_dump_of_the_whole_tree(self, populated_vault: ObsidianVault, populated_root: Path):
+        assert str(populated_root) not in populated_vault.root.model_dump_json()
+
+    def test_the_same_vault_in_two_places_has_the_same_relative_paths(self, populated_root: Path, tmp_path: Path):
+        import shutil
+
+        copy = tmp_path / "somewhere" / "else" / "vault"
+        shutil.copytree(populated_root, copy)
+        first = ObsidianVault(make_settings(populated_root))
+        second = ObsidianVault(make_settings(copy))
+        assert {n.path for n in first} == {n.path for n in second}
+        assert {n.absolute_path for n in first}.isdisjoint({n.absolute_path for n in second})
+
+    def test_a_relative_vault_root_still_gives_a_relative_note_path(self, populated_root: Path, monkeypatch: pytest.MonkeyPatch):
+        monkeypatch.chdir(populated_root.parent)
+        vault = ObsidianVault(make_settings(Path(populated_root.name)))
+        assert vault["idea"].path == PurePosixPath("10_Projects/idea.md")
+        assert vault["idea"].content.endswith("Body")  # read through the (relative) absolute_path
+
+    def test_unicode_file_names_get_normalized_keys_but_keep_their_real_path(self, vault_root: Path):
+        import unicodedata
+
+        nfd = unicodedata.normalize("NFD", "Zażółć.md")
+        write(vault_root / "30_Resources" / nfd, "---\nk: v\n---\nBody")
+        (note,) = ObsidianVault(make_settings(vault_root))
+        assert note.path == PurePosixPath(unicodedata.normalize("NFC", "30_Resources/Zażółć.md"))
+        assert note.name == unicodedata.normalize("NFC", "Zażółć")
+        assert note.absolute_path.exists()          # the real name on disk is untouched
+        assert note.frontmatter == {"k": "v"}       # ... so the file can be read
+
+    def test_files_created_from_templates_get_both_paths(self, template_vault: ObsidianVault, template_root: Path):
+        note = template_vault.create_from_template("weekly_review_template", "review")
+        assert (note.path, note.absolute_path) == (PurePosixPath("review.md"), template_root / "review.md")
+
+
+class TestAttach:
+    """A note that only knows its vault-relative path (e.g. from the database) is completed by the vault."""
+
+    def test_sets_the_absolute_path(self, populated_vault: ObsidianVault, populated_root: Path):
+        loaded = MarkdownNote(name="idea", path="10_Projects/idea.md")
+        assert populated_vault.attach(loaded).absolute_path == populated_root / "10_Projects" / "idea.md"
+
+    def test_returns_the_same_note(self, populated_vault: ObsidianVault):
+        loaded = MarkdownNote(name="idea", path="10_Projects/idea.md")
+        assert populated_vault.attach(loaded) is loaded
+
+    def test_the_note_can_then_read_its_content(self, populated_vault: ObsidianVault):
+        loaded = MarkdownNote(name="idea", path="10_Projects/idea.md")
+        with pytest.raises(RuntimeError):
+            _ = loaded.content
+        assert populated_vault.attach(loaded).content.endswith("Body")
+
+    def test_attaching_again_is_harmless(self, populated_vault: ObsidianVault, populated_root: Path):
+        note = populated_vault["inbox"]
+        before = note.absolute_path
+        assert populated_vault.attach(note).absolute_path == before
+
+    def test_attaching_to_another_vault_moves_the_note(self, populated_vault: ObsidianVault, populated_root: Path, tmp_path: Path):
+        import shutil
+
+        copy = tmp_path / "other" / "vault"
+        shutil.copytree(populated_root, copy)
+        other = ObsidianVault(make_settings(copy))
+        note = MarkdownNote(name="inbox", path="inbox.md", absolute_path=populated_root / "inbox.md")
+        assert other.attach(note).absolute_path == copy / "inbox.md"
+
+    def test_works_lazily_over_a_stream_of_notes(self, populated_vault: ObsidianVault, populated_root: Path):
+        stream = (MarkdownNote(name=n.name, path=n.path) for n in populated_vault)
+        attached = list(map(populated_vault.attach, stream))
+        assert len(attached) == 4
+        assert all(n.absolute_path == populated_root / n.path for n in attached)
+
+    def test_does_not_check_that_the_file_exists(self, populated_vault: ObsidianVault, populated_root: Path):
+        note = populated_vault.attach(MarkdownNote(name="ghost", path="ghost.md"))
+        assert note.absolute_path == populated_root / "ghost.md"
+        with pytest.raises(FileNotFoundError):
+            _ = note.content
+
+    def test_a_note_cannot_be_attached_outside_the_vault(self):
+        with pytest.raises(ValidationError):
+            MarkdownNote(name="evil", path="../../etc/passwd")

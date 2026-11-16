@@ -18,9 +18,6 @@ def main():
     
     episteme = Episteme()
     print(episteme.sync_obsidian())
-    import time
-    time.sleep(4)
-    print(episteme.sync_obsidian())
     
 
 if __name__ == "__main__":

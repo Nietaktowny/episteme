@@ -2,15 +2,16 @@
 
 import logging
 import re
+import unicodedata
 from functools import cached_property
-from pathlib import Path
+from pathlib import Path, PurePosixPath
 from datetime import datetime
 from collections.abc import Iterator
 from typing import Any
 from enum import StrEnum, auto
 
 import yaml
-from pydantic import BaseModel, Field
+from pydantic import BaseModel, Field, field_validator
 from rich.markup import escape
 from rich.panel import Panel
 from rich.table import Table
@@ -85,12 +86,58 @@ class CategoryDirectory(StrEnum):
     ATTACHMENTS = "110_Attachments"
     SYSTEM = "_system"
 
-class MarkdownNote(BaseModel):
+class _VaultLocated(BaseModel):
+    """Base of the models that sit somewhere in a vault: notes and directories.
+
+    ``path`` says where, relative to the vault root, and is the only location
+    that is ever stored: it is the same on every machine. ``absolute_path`` says
+    where on *this* machine; it is attached by the vault that owns the root and
+    is never serialized, so it cannot end up in the database.
+
+    Attributes:
+        path: Location relative to the vault root, with forward slashes and
+            Unicode NFC normalization. ``.`` is the vault root itself.
+        absolute_path: Location on this machine, or ``None`` when the model is
+            not attached to a vault (for example when it was loaded from the
+            database).
+
+    Examples:
+        >>> directory = VaultDirectory(path="10_Projects/sub")
+        >>> directory.path
+        PurePosixPath('10_Projects/sub')
+        >>> directory.absolute_path is None
+        True
+        >>> try:
+        ...     VaultDirectory(path="/etc")
+        ... except ValueError as error:
+        ...     "must be relative to the vault root" in str(error)
+        True
+    """
+
+    path: PurePosixPath = Field(..., description="Path relative to the vault root, with forward slashes")
+    absolute_path: Path | None = Field(
+        default=None, exclude=True, repr=False,
+        description="Path on this machine, attached by the vault; never serialized or stored",
+    )
+
+    @field_validator("path")
+    @classmethod
+    def _check_path(cls, path: PurePosixPath) -> PurePosixPath:
+        if path.is_absolute():
+            raise ValueError(f"Path '{path}' must be relative to the vault root.")
+        if ".." in path.parts:
+            raise ValueError(f"Path '{path}' must not leave the vault root.")
+        return PurePosixPath(unicodedata.normalize("NFC", path.as_posix()))
+
+
+class MarkdownNote(_VaultLocated):
     r"""A single markdown note of the vault.
 
     Attributes:
-        name: Note name.
-        path: Path to the note file.
+        name: Note name (Unicode NFC).
+        path: Path of the note file relative to the vault root.
+        absolute_path: Path of the note file on this machine, set by the
+            vault. Needed to read ``content``; never stored.
         created_at: Note creation timestamp.
         updated_at: Note last update timestamp.
         template: Name of the used template, if the note follows one.
@@ -109,7 +156,7 @@ class MarkdownNote(BaseModel):
         >>> with tempfile.TemporaryDirectory() as tmp:
         ...     file = Path(tmp) / "Idea.md"
         ...     _ = file.write_text("---\ntags: [a]\n---\nHello")
-        ...     note = MarkdownNote(name="Idea", path=file)
+        ...     note = MarkdownNote(name="Idea", path="Idea.md", absolute_path=file)
         ...     "content" in note.__dict__
         ...     note.frontmatter
         ...     note.content.endswith("Hello")
@@ -125,7 +172,6 @@ class MarkdownNote(BaseModel):
     """
 
     name: str = Field(..., description="Note name")
-    path: Path = Field(..., description="Path to the note file")
     created_at: datetime = Field(default_factory=datetime.now, description="Note creation timestamp")
     updated_at: datetime = Field(default_factory=datetime.now, description="Note last update timestamp")
     template: str | None = Field(default=None, description="Used template name. Used only if note content follows some template")
@@ -135,10 +181,22 @@ class MarkdownNote(BaseModel):
     category_directory: CategoryDirectory = Field(default=CategoryDirectory.INBOX, description="Category directory where the note is stored")
     size: int = Field(default=0, description="Size of the note in bytes.")
 
+    @field_validator("name")
+    @classmethod
+    def _normalize_name(cls, name: str) -> str:
+        return unicodedata.normalize("NFC", name)
+
     @cached_property
     def content(self) -> str:
-        """Full note content, read from the filesystem on first access."""
-        with open(self.path, "r", encoding="utf-8") as f:
+        """Full note content, read from the filesystem on first access.
+
+        Raises:
+            RuntimeError: If the note has no ``absolute_path``, i.e. it is not
+                attached to a vault (see :meth:`episteme.obsidian.ObsidianVault.attach`).
+        """
+        if self.absolute_path is None:
+            raise RuntimeError(f"Note '{self.path}' is not attached to a vault, so its file cannot be read.")
+        with open(self.absolute_path, "r", encoding="utf-8") as f:
             content = f.read()
             self.size = len(content.encode("utf-8"))
             return content
@@ -265,7 +323,7 @@ class MarkdownNote(BaseModel):
             >>> with tempfile.TemporaryDirectory() as tmp:
             ...     file = Path(tmp) / "Idea.md"
             ...     _ = file.write_text("---\ntags: [a]\n---\nHi")
-            ...     note = MarkdownNote(name="Idea", path=file)
+            ...     note = MarkdownNote(name="Idea", path="Idea.md", absolute_path=file)
             ...     lines = str(note).splitlines()
             ...     lines[0]
             ...     len(lines)
@@ -293,11 +351,12 @@ class MarkdownNote(BaseModel):
             lines.append(f"  archived: {self.archived_at:%Y-%m-%d %H:%M}")
         return "\n".join(lines)
 
-class VaultDirectory(BaseModel):
+class VaultDirectory(_VaultLocated):
     """A vault directory with its notes and nested subdirectories.
 
     Attributes:
-        path: Path to the directory.
+        path: Path of the directory relative to the vault root (``.`` for the root).
+        absolute_path: Path of the directory on this machine, set by the vault.
         notes: Notes located directly in the directory.
         subdirectories: Nested directories.
 
@@ -307,7 +366,6 @@ class VaultDirectory(BaseModel):
         ([], [])
     """
 
-    path: Path = Field(..., description="Path to the directory")
     notes: list[MarkdownNote] = Field(default_factory=list, description="List of notes in the directory")
     subdirectories: list["VaultDirectory"] = Field(default_factory=list, description="List of subdirectories in the directory")
 
@@ -405,7 +463,8 @@ class VaultDirectory(BaseModel):
             >>> len(tree.children)
             1
         """
-        tree = Tree(f"[bold blue]{escape(str(self.path))}[/] [dim]({self.note_count()} notes)[/]")
+        label = self.absolute_path if self.absolute_path is not None else self.path
+        tree = Tree(f"[bold blue]{escape(str(label))}[/] [dim]({self.note_count()} notes)[/]")
         self._add_to_tree(tree)
         return tree
 
@@ -426,19 +485,29 @@ class VaultDirectory(BaseModel):
                 return markdown_note
         raise KeyError(f"Note '{note}' not found.")
 
-    def get_dir(self, path: Path) -> "VaultDirectory" | None:
+    def get_dir(self, path: PurePosixPath | str) -> "VaultDirectory" | None:
         """Recursively find a subdirectory by its path.
 
         Args:
-            path: Path to the subdirectory to find.
-        
+            path: Path of the subdirectory to find, relative to the vault root
+                (``.`` is the root itself).
+
         Returns:
             The matching subdirectory, or None if not found.
+
+        Examples:
+            >>> nested = VaultDirectory(path="a/b")
+            >>> root = VaultDirectory(path=".", subdirectories=[VaultDirectory(path="a", subdirectories=[nested])])
+            >>> root.get_dir("a/b") is nested
+            True
+            >>> root.get_dir(".") is root, root.get_dir("nope") is None
+            (True, True)
         """
-        if self.path == path:
+        target = PurePosixPath(unicodedata.normalize("NFC", PurePosixPath(path).as_posix()))
+        if self.path == target:
             return self
         for subdirectory in self.subdirectories:
-            result = subdirectory.get_dir(path)
+            result = subdirectory.get_dir(target)
             if result is not None:
                 return result
         return None
