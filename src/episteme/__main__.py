@@ -17,10 +17,11 @@ def main():
     )
     
     episteme = Episteme()
-    daily_note = episteme.obsidian["2026-11-04"]
-    print(daily_note)
-    print(daily_note.frontmatter)
-    print(daily_note)
+    print(episteme.sync_obsidian())
+    import time
+    time.sleep(4)
+    print(episteme.sync_obsidian())
+    
 
 if __name__ == "__main__":
     main()

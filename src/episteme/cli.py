@@ -5,6 +5,7 @@ values use ``__`` as delimiter, e.g. ``OBSIDIAN__VAULT_ROOT``) or through a
 ``.env`` file.
 """
 
+from enum import StrEnum
 from pathlib import Path
 
 from pydantic_settings import BaseSettings, SettingsConfigDict
@@ -33,6 +34,45 @@ class ObsidianSettings(BaseModel):
     vault_root: Path = Field(Path("."), description="Path to root of Obsidian vault")
     skip_dirs: list[str] = Field(default_factory=lambda: [".obsidian"], description="List of directories names to skip when mapping the vault")
 
+class DatabaseEngineName(StrEnum):
+    """Database engines Episteme can store its data in.
+
+    The value is what is written in the ``DATA__ENGINE`` setting.
+
+    Examples:
+        >>> DatabaseEngineName("duckdb")
+        <DatabaseEngineName.DUCKDB: 'duckdb'>
+    """
+
+    DUCKDB = "duckdb"
+
+class DataSettings(BaseModel):
+    """Settings describing where and how Episteme stores its data.
+
+    The settings do not depend on a particular database: ``engine`` picks the
+    implementation and ``url`` tells it where the database is.
+
+    Attributes:
+        engine: Database engine to use.
+        url: Connection URL of the database. For file-based engines it can
+            also be a plain filesystem path, absolute or relative to the
+            working directory.
+
+    Examples:
+        >>> settings = DataSettings()
+        >>> settings.engine
+        <DatabaseEngineName.DUCKDB: 'duckdb'>
+        >>> settings.url
+        'episteme.duckdb'
+        >>> DataSettings(url="/var/lib/episteme/data.duckdb").url
+        '/var/lib/episteme/data.duckdb'
+        >>> DataSettings(engine="duckdb", url="duckdb:///:memory:").engine
+        <DatabaseEngineName.DUCKDB: 'duckdb'>
+    """
+
+    engine: DatabaseEngineName = Field(DatabaseEngineName.DUCKDB, description="Database engine to use")
+    url: str = Field("episteme.duckdb", description="Connection URL of the database, or a file path for file-based engines")
+
 class EpistemeSettings(BaseSettings):
     """Top-level Episteme settings.
 
@@ -41,6 +81,7 @@ class EpistemeSettings(BaseSettings):
 
     Attributes:
         obsidian: Obsidian vault settings.
+        data: Database settings.
 
     Examples:
         >>> settings = EpistemeSettings(obsidian=ObsidianSettings(vault_root="/tmp/vault"))
@@ -60,3 +101,4 @@ class EpistemeSettings(BaseSettings):
     )
 
     obsidian: ObsidianSettings = Field(default_factory=ObsidianSettings, description="Obsidian vault settings")
+    data: DataSettings = Field(default_factory=DataSettings, description="Database settings")

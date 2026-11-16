@@ -7,8 +7,9 @@ from pathlib import Path
 import pytest
 from rich.table import Table
 
-from episteme.cli import EpistemeSettings, ObsidianSettings
-from episteme.models import (
+from episteme import Episteme
+from episteme.cli import DataSettings, EpistemeSettings, ObsidianSettings
+from episteme.models.obsidian import (
     CategoryDirectory,
     MarkdownNote,
     ObsidianStatistics,
@@ -17,8 +18,8 @@ from episteme.models import (
 from episteme.obsidian import ObsidianVault
 
 
-def make_settings(root: Path, **obsidian_kwargs) -> EpistemeSettings:
-    return EpistemeSettings(obsidian=ObsidianSettings(vault_root=root, **obsidian_kwargs))
+def make_settings(root: Path, **obsidian_kwargs) -> ObsidianSettings:
+    return ObsidianSettings(vault_root=root, **obsidian_kwargs)
 
 
 def write(path: Path, content: str = "") -> Path:
@@ -82,8 +83,8 @@ class TestInit:
         monkeypatch.chdir(vault_root)
         monkeypatch.setenv("OBSIDIAN__VAULT_ROOT", str(vault_root))
         vault = ObsidianVault()
-        assert isinstance(vault.settings, EpistemeSettings)
-        assert vault.settings.obsidian.vault_root == vault_root
+        assert isinstance(vault.settings, ObsidianSettings)
+        assert vault.settings.vault_root == vault_root
 
     def test_missing_vault_root_raises(self, tmp_path: Path):
         with pytest.raises(FileNotFoundError):
@@ -94,7 +95,7 @@ class TestMap:
     def test_empty_vault(self, empty_vault: ObsidianVault):
         assert empty_vault.root.note_count() == 0
         assert empty_vault.root.directory_count() == 0
-        assert empty_vault.root.path == empty_vault.settings.obsidian.vault_root
+        assert empty_vault.root.path == empty_vault.settings.vault_root
 
     def test_counts(self, populated_vault: ObsidianVault):
         # inbox, idea, nested, book
@@ -270,7 +271,7 @@ class TestLazyNote:
         write(vault_root / "a.md", "ab\ncd")
         note = ObsidianVault(make_settings(vault_root)).root.notes[0]
         _ = note.content
-        assert "content:  5 chars, 2 lines" in str(note)
+        assert "content:  5 bytes, 2 lines" in str(note)
 
 
 class TestBuildMarkdownNote:
@@ -1051,3 +1052,37 @@ class TestCreateFromTemplateUnmappedDirectory:
 
     def test_placeholders_with_inner_spaces(self, empty_vault: ObsidianVault, frozen_today: str):
         assert empty_vault._resolve_placeholders("{{ date : YYYY-MM-DD }}") == frozen_today
+
+
+class TestEpistemeSettingsWiring:
+    @pytest.fixture
+    def episteme(self, vault_root: Path, tmp_path: Path) -> Episteme:
+        write(vault_root / "a.md", "A")
+        settings = EpistemeSettings(
+            obsidian=ObsidianSettings(vault_root=vault_root),
+            data=DataSettings(url=str(tmp_path / "data" / "episteme.duckdb")),
+        )
+        return Episteme(settings)
+
+    def test_vault_gets_only_obsidian_settings(self, episteme: Episteme):
+        assert episteme.obsidian.settings is episteme.settings.obsidian
+        assert isinstance(episteme.obsidian.settings, ObsidianSettings)
+
+    def test_database_gets_only_data_settings(self, episteme: Episteme):
+        assert episteme.data.settings is episteme.settings.data
+        assert isinstance(episteme.data.settings, DataSettings)
+
+    def test_database_file_created_at_the_url(self, episteme: Episteme):
+        assert Path(episteme.settings.data.url).exists()
+
+    def test_vault_mapped_with_given_root(self, episteme: Episteme):
+        assert len(episteme.obsidian) == 1
+
+    def test_defaults_come_from_environment(self, monkeypatch: pytest.MonkeyPatch, vault_root: Path, tmp_path: Path):
+        monkeypatch.chdir(tmp_path)
+        monkeypatch.setenv("OBSIDIAN__VAULT_ROOT", str(vault_root))
+        monkeypatch.setenv("DATA__URL", str(tmp_path / "env.duckdb"))
+        episteme = Episteme()
+        assert episteme.obsidian.settings.vault_root == vault_root
+        assert episteme.data.settings.url == str(tmp_path / "env.duckdb")
+        assert (tmp_path / "env.duckdb").exists()

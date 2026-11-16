@@ -45,4 +45,6 @@ nav:
       - episteme: reference/episteme.md
       - episteme.obsidian: reference/obsidian.md
       - episteme.cli: reference/cli.md
-      - episteme.models: reference/models.md
+      - episteme.database: reference/database.md
+      - episteme.models.obsidian: reference/models_obsidian.md
+      - episteme.models.database: reference/models_database.md

@@ -1,3 +1,0 @@
-# episteme.models
-
-::: episteme.models

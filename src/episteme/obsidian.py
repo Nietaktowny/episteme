@@ -1,8 +1,8 @@
 """Obsidian system: maps an Obsidian vault into in-memory models.
 
 The :class:`ObsidianVault` class scans a vault and builds a tree of
-:class:`~episteme.models.VaultDirectory` and
-:class:`~episteme.models.MarkdownNote` objects (see :mod:`episteme.models`).
+:class:`~episteme.models.obsidian.VaultDirectory` and
+:class:`~episteme.models.obsidian.MarkdownNote` objects (see :mod:`episteme.models.obsidian`).
 """
 
 import os
@@ -17,8 +17,8 @@ import re
 from rich.table import Table
 from rich import print
 
-from episteme.cli import EpistemeSettings
-from episteme.models import (
+from episteme.cli import EpistemeSettings, ObsidianSettings
+from episteme.models.obsidian import (
     VaultDirectory,
     CategoryDirectory,
     MarkdownNote,
@@ -34,7 +34,7 @@ class ObsidianVault:
     refresh it after the files on disk changed.
 
     Attributes:
-        settings: Settings used to locate and map the vault.
+        settings: Obsidian settings used to locate and map the vault.
         root: Root directory of the mapped vault.
         mapped_at: Timestamp of the last mapping.
 
@@ -46,7 +46,7 @@ class ObsidianVault:
         ...     (root / "10_Projects").mkdir()
         ...     _ = (root / "10_Projects" / "idea.md").write_text("---\ntitle: Idea\n---\nBody")
         ...     _ = (root / "inbox.md").write_text("Hello")
-        ...     settings = EpistemeSettings(obsidian=ObsidianSettings(vault_root=root))
+        ...     settings = ObsidianSettings(vault_root=root)
         ...     vault = ObsidianVault(settings)
         ...     vault.statistics.total_notes
         ...     vault.statistics.total_directories
@@ -54,29 +54,28 @@ class ObsidianVault:
         1
     """
 
-    def __init__(self, settings: EpistemeSettings = None):
+    def __init__(self, settings: ObsidianSettings = None):
         """Initialize the vault and map it.
 
         Args:
-            settings: Settings to use. When ``None``, default
-                :class:`EpistemeSettings` (environment / ``.env``) are used.
+            settings: Obsidian settings to use. When ``None``, the ``obsidian``
+                section of :class:`EpistemeSettings` (environment / ``.env``) is used.
 
         Examples:
             >>> import tempfile
             >>> from episteme.cli import ObsidianSettings
             >>> with tempfile.TemporaryDirectory() as tmp:
-            ...     settings = EpistemeSettings(obsidian=ObsidianSettings(vault_root=tmp))
+            ...     settings = ObsidianSettings(vault_root=tmp)
             ...     vault = ObsidianVault(settings)
             ...     vault.settings is settings
             ...     vault.root.note_count()
             True
             0
         """
-        self.settings: EpistemeSettings = settings if settings is not None else EpistemeSettings()
+        self.settings: ObsidianSettings = settings if settings is not None else EpistemeSettings().obsidian
         self.root: VaultDirectory
         self.mapped_at: datetime
         self.__mapping_duration: float | None = None
-        self.map()
 
     def __repr__(self) -> str:
         """Return a concise representation of the vault.
@@ -91,7 +90,7 @@ class ObsidianVault:
             ...     root = Path(tmp)
             ...     (root / "10_Projects").mkdir()
             ...     _ = (root / "10_Projects" / "a.md").write_text("A")
-            ...     vault = ObsidianVault(EpistemeSettings(obsidian=ObsidianSettings(vault_root=root)))
+            ...     vault = ObsidianVault(ObsidianSettings(vault_root=root))
             ...     repr(vault).replace(str(root), "<root>")
             "ObsidianVault(root=PosixPath('<root>'), notes=1, directories=1)"
         """
@@ -107,7 +106,7 @@ class ObsidianVault:
             >>> import tempfile
             >>> from episteme.cli import ObsidianSettings
             >>> with tempfile.TemporaryDirectory() as tmp:
-            ...     vault = ObsidianVault(EpistemeSettings(obsidian=ObsidianSettings(vault_root=tmp)))
+            ...     vault = ObsidianVault(ObsidianSettings(vault_root=tmp))
             ...     table = vault.__rich__()
             ...     table.title
             ...     table.row_count
@@ -136,7 +135,7 @@ class ObsidianVault:
             >>> import tempfile
             >>> from episteme.cli import ObsidianSettings
             >>> with tempfile.TemporaryDirectory() as tmp:
-            ...     vault = ObsidianVault(EpistemeSettings(obsidian=ObsidianSettings(vault_root=tmp)))
+            ...     vault = ObsidianVault(ObsidianSettings(vault_root=tmp))
             ...     lines = str(vault).splitlines()
             ...     lines[0] == f"Vault Root: {tmp}"
             ...     lines[2:]
@@ -166,8 +165,8 @@ class ObsidianVault:
             >>> import tempfile
             >>> from episteme.cli import ObsidianSettings
             >>> with tempfile.TemporaryDirectory() as tmp:
-            ...     vault1 = ObsidianVault(EpistemeSettings(obsidian=ObsidianSettings(vault_root=tmp)))
-            ...     vault2 = ObsidianVault(EpistemeSettings(obsidian=ObsidianSettings(vault_root=tmp)))
+            ...     vault1 = ObsidianVault(ObsidianSettings(vault_root=tmp))
+            ...     vault2 = ObsidianVault(ObsidianSettings(vault_root=tmp))
             ...     vault1 == vault2
             True
         """
@@ -196,7 +195,7 @@ class ObsidianVault:
             ...     root = Path(tmp)
             ...     (root / "10_Projects").mkdir()
             ...     _ = (root / "10_Projects" / "a.md").write_text("A")
-            ...     vault = ObsidianVault(EpistemeSettings(obsidian=ObsidianSettings(vault_root=root)))
+            ...     vault = ObsidianVault(ObsidianSettings(vault_root=root))
             ...     len(vault)
             1
         """
@@ -216,7 +215,7 @@ class ObsidianVault:
             ...     (root / "10_Projects").mkdir()
             ...     _ = (root / "10_Projects" / "a.md").write_text("A")
             ...     _ = (root / "b.md").write_text("B")
-            ...     vault = ObsidianVault(EpistemeSettings(obsidian=ObsidianSettings(vault_root=root)))
+            ...     vault = ObsidianVault(ObsidianSettings(vault_root=root))
             ...     notes = list(vault)
             ...     len(notes)
             2
@@ -252,7 +251,7 @@ class ObsidianVault:
             >>> with tempfile.TemporaryDirectory() as tmp:
             ...     root = Path(tmp)
             ...     _ = (root / "a.md").write_text("A")
-            ...     vault = ObsidianVault(EpistemeSettings(obsidian=ObsidianSettings(vault_root=root)))
+            ...     vault = ObsidianVault(ObsidianSettings(vault_root=root))
             ...     note = vault["a"]
             ...     note.name
             'a'
@@ -282,7 +281,7 @@ class ObsidianVault:
             ...     root = Path(tmp)
             ...     (root / "30_Resources").mkdir()
             ...     _ = (root / "30_Resources" / "book.md").write_text("---\nauthor: X\n---\nText")
-            ...     vault = ObsidianVault(EpistemeSettings(obsidian=ObsidianSettings(vault_root=root)))
+            ...     vault = ObsidianVault(ObsidianSettings(vault_root=root))
             ...     note = vault._build_markdown_note(root / "30_Resources" / "book.md")
             ...     note.name
             ...     note.frontmatter
@@ -305,7 +304,7 @@ class ObsidianVault:
         """Recursively map a directory into a :class:`VaultDirectory`.
 
         Only ``.md`` files are mapped as notes. Directories listed in
-        ``settings.obsidian.skip_dirs`` are ignored.
+        ``settings.skip_dirs`` are ignored.
 
         Args:
             dir_path: Directory to map.
@@ -323,7 +322,7 @@ class ObsidianVault:
             ...     _ = (root / "10_Projects" / "a.md").write_text("A")
             ...     _ = (root / "10_Projects" / "readme.txt").write_text("ignored")
             ...     _ = (root / "10_Projects" / "sub" / "b.md").write_text("B")
-            ...     vault = ObsidianVault(EpistemeSettings(obsidian=ObsidianSettings(vault_root=root)))
+            ...     vault = ObsidianVault(ObsidianSettings(vault_root=root))
             ...     directory = vault._map_subdirectory(root / "10_Projects")
             ...     len(directory.notes)
             ...     len(directory.subdirectories)
@@ -338,7 +337,7 @@ class ObsidianVault:
                 if note.is_file() and note.name.endswith(".md"):
                     markdown_note = self._build_markdown_note(Path(note.path))
                     subdirectory.notes.append(markdown_note)
-                elif note.is_dir() and note.name not in self.settings.obsidian.skip_dirs:
+                elif note.is_dir() and note.name not in self.settings.skip_dirs:
                     nested_subdirectory = self._map_subdirectory(Path(note.path))
                     subdirectory.subdirectories.append(nested_subdirectory)
         return subdirectory
@@ -359,7 +358,7 @@ class ObsidianVault:
             >>> from episteme.cli import ObsidianSettings
             >>> with tempfile.TemporaryDirectory() as tmp:
             ...     root = Path(tmp)
-            ...     vault = ObsidianVault(EpistemeSettings(obsidian=ObsidianSettings(vault_root=root)))
+            ...     vault = ObsidianVault(ObsidianSettings(vault_root=root))
             ...     vault._get_category_directory(root / "10_Projects" / "a.md")
             ...     vault._get_category_directory(root / "Unknown" / "a.md")
             ...     vault._get_category_directory(root / "a.md")
@@ -367,7 +366,7 @@ class ObsidianVault:
             <CategoryDirectory.INBOX: '00_Inbox'>
             <CategoryDirectory.INBOX: '00_Inbox'>
         """
-        relative_path = note_path.relative_to(self.settings.obsidian.vault_root)
+        relative_path = note_path.relative_to(self.settings.vault_root)
         parts = relative_path.parts
         if len(parts) > 0:
             first_part = parts[0]
@@ -378,7 +377,7 @@ class ObsidianVault:
         return CategoryDirectory.INBOX
 
     def map(self) -> VaultDirectory:
-        """Map the whole vault configured in ``settings.obsidian.vault_root``.
+        """Map the whole vault configured in ``settings.vault_root``.
 
         Updates :attr:`root` and :attr:`mapped_at`.
 
@@ -394,7 +393,7 @@ class ObsidianVault:
             ...     (root / "20_Lanes").mkdir()
             ...     _ = (root / "20_Lanes" / "lane.md").write_text("Lane")
             ...     _ = (root / "top.md").write_text("Top")
-            ...     vault = ObsidianVault(EpistemeSettings(obsidian=ObsidianSettings(vault_root=root)))
+            ...     vault = ObsidianVault(ObsidianSettings(vault_root=root))
             ...     root_directory = vault.map()
             ...     root_directory is vault.root
             ...     root_directory.note_count()
@@ -405,15 +404,15 @@ class ObsidianVault:
         """
         start_time = time.perf_counter()
         root = VaultDirectory(
-            path=self.settings.obsidian.vault_root
+            path=self.settings.vault_root
         )
-        with os.scandir(self.settings.obsidian.vault_root) as notes:
+        with os.scandir(self.settings.vault_root) as notes:
             for note in notes:
                 if note.is_file() and note.name.endswith(".md"):
                     markdown_note = self._build_markdown_note(Path(note.path))
                     markdown_note.category_directory = self._get_category_directory(Path(note.path))
                     root.notes.append(markdown_note)
-                elif note.is_dir() and note.name not in self.settings.obsidian.skip_dirs:
+                elif note.is_dir() and note.name not in self.settings.skip_dirs:
                     subdirectory = self._map_subdirectory(Path(note.path))
                     root.subdirectories.append(subdirectory)
 
@@ -421,7 +420,7 @@ class ObsidianVault:
         self.mapped_at = datetime.now()
         self.__dict__.pop("statistics", None)
 
-        logger.info(f"Mapped Obsidian vault at {self.settings.obsidian.vault_root}, containing {root.note_count()} notes in {root.directory_count()} directories.")
+        logger.info(f"Mapped Obsidian vault at {self.settings.vault_root}, containing {root.note_count()} notes in {root.directory_count()} directories.")
         end_time = time.perf_counter()
         self.__mapping_duration = end_time - start_time
         logger.debug(f"Mapping took {self.__mapping_duration:.2f} seconds.")
@@ -441,7 +440,7 @@ class ObsidianVault:
             ...     root = Path(tmp)
             ...     (root / "sub").mkdir()
             ...     _ = (root / "sub" / "a.md").write_text("A")
-            ...     vault = ObsidianVault(EpistemeSettings(obsidian=ObsidianSettings(vault_root=root)))
+            ...     vault = ObsidianVault(ObsidianSettings(vault_root=root))
             ...     stats = vault.statistics
             ...     stats.total_notes, stats.total_directories
             (1, 1)
@@ -485,7 +484,7 @@ class ObsidianVault:
             >>> with tempfile.TemporaryDirectory() as tmp:
             ...     root = Path(tmp)
             ...     (root / "10_Projects").mkdir()
-            ...     vault = ObsidianVault(EpistemeSettings(obsidian=ObsidianSettings(vault_root=root)))
+            ...     vault = ObsidianVault(ObsidianSettings(vault_root=root))
             ...     vault.get_category_dir(CategoryDirectory.PROJECTS).path == root / "10_Projects"
             True
         """
@@ -541,7 +540,7 @@ class ObsidianVault:
             >>> import tempfile
             >>> from episteme.cli import ObsidianSettings
             >>> with tempfile.TemporaryDirectory() as tmp:
-            ...     vault = ObsidianVault(EpistemeSettings(obsidian=ObsidianSettings(vault_root=tmp)))
+            ...     vault = ObsidianVault(ObsidianSettings(vault_root=tmp))
             ...     vault._resolve_placeholders("# {{title}}", title="Idea")
             ...     vault._resolve_placeholders("# {{title}}")
             ...     vault._resolve_placeholders("{{unknown}}")
