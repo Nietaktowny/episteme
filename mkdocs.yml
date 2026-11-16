@@ -42,6 +42,7 @@ markdown_extensions:
 nav:
   - Home: index.md
   - Database views: views.md
+  - Anki: anki.md
   - Snapshots: snapshots.md
   - Tasks: tasks.md
   - Templates: templates.md
@@ -49,8 +50,11 @@ nav:
       - episteme: reference/episteme.md
       - episteme.obsidian: reference/obsidian.md
       - episteme.obsidian.tasks: reference/obsidian_tasks.md
+      - episteme.anki: reference/anki.md
+      - episteme.anki.protobuf: reference/anki_protobuf.md
       - episteme.cli: reference/cli.md
       - episteme.scheduler: reference/scheduler.md
       - episteme.database: reference/database.md
       - episteme.models.obsidian: reference/models_obsidian.md
+      - episteme.models.anki: reference/models_anki.md
       - episteme.models.database: reference/models_database.md

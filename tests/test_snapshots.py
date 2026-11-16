@@ -378,7 +378,7 @@ class TestMigrationFiveOnAnExistingDatabase:
         real = Path(str(DuckDBEngine(":memory:").sql_dir))
         old_sql = tmp_path / "sql"
         shutil.copytree(real, old_sql)
-        for later in ("V5__add_body_hash.sql", "V6__create_tasks.sql", "V7__create_task_views.sql"):
+        for later in ("V5__add_body_hash.sql", "V6__create_tasks.sql", "V7__create_task_views.sql", "V8__create_anki.sql", "V9__create_anki_views.sql"):
             (old_sql / "migrations" / later).unlink()                          # the schema before body_hash
 
         class OldEngine(DuckDBEngine):

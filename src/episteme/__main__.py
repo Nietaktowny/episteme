@@ -17,7 +17,7 @@ def main():
     )
     
     episteme = Episteme()
-    print(episteme.sync_obsidian())
+    print(episteme.sync())
     
 
 if __name__ == "__main__":

@@ -11,4 +11,6 @@ episteme = Episteme(settings)
 print(episteme.obsidian)
 ```
 
+Anki statistics (never the content of the cards) can be synced into the same database: see [Anki](anki.md).
+
 See the [API reference](reference/episteme.md) for details.

@@ -3,6 +3,7 @@
     cli (settings)       <- used by everyone, imports nothing of Episteme
     models/              <- shared vocabulary, imports no system
     obsidian  -> cli, models.obsidian        (knows nothing about the database)
+    anki      -> cli, models.anki            (knows nothing about the database)
     database  -> cli, models                 (knows nothing about Obsidian)
     episteme (package root, __main__)        (the only place that knows several systems)
 
@@ -158,6 +159,7 @@ RULES: dict[str, set[str]] = {
     "episteme.cli": set(),
     "episteme.models": {"episteme.models"},
     "episteme.obsidian": {"episteme.cli", "episteme.models.obsidian", "episteme.obsidian"},
+    "episteme.anki": {"episteme.cli", "episteme.models.anki", "episteme.anki"},
     "episteme.database": {"episteme.cli", "episteme.models", "episteme.database"},
 }
 # "episteme" (the package root) and "episteme.__main__" have no rule: they compose the parts.

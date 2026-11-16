@@ -198,3 +198,89 @@ class TestRich:
     def test_markup_in_an_error_message_stays_literal(self, render):
         error = ErrorInfo(name="E", message="[bold]not markup[/bold]", traceback="")
         assert "[bold]not markup[/bold]" in render(composite(obsidian=ObsidianSyncResult.failed(error)))
+
+
+from episteme.models.sync import AnkiSyncResult, AnkiTableChanges  # noqa: E402
+
+
+def anki(**overrides) -> AnkiSyncResult:
+    values = dict(
+        cards=AnkiTableChanges(added=1, updated=2, unchanged=3, removed=4),
+        notes=AnkiTableChanges(added=1),
+        decks=AnkiTableChanges(unchanged=2),
+        deck_options=AnkiTableChanges(removed=1),
+        reviews_added=5, reviews_total=50, copy_seconds=0.25, database_seconds=1.0,
+    )
+    return AnkiSyncResult(**{**values, **overrides})
+
+
+class TestAnkiTableChanges:
+    def test_total_and_changed(self):
+        changes = AnkiTableChanges(added=1, updated=2, unchanged=7, removed=3)
+        assert (changes.total, changes.changed) == (10, 6)
+
+    def test_nothing_by_default(self):
+        assert AnkiTableChanges().total == 0
+
+    def test_negative_counts_are_rejected(self):
+        with pytest.raises(ValidationError):
+            AnkiTableChanges(added=-1)
+
+
+class TestAnkiSyncResult:
+    def test_an_empty_result_is_ok(self):
+        r = AnkiSyncResult()
+        assert (r.ok, r.changed, r.reviews_added, r.reviews_reloaded) == (True, 0, 0, False)
+
+    def test_changed_adds_up_the_tables_and_the_new_reviews(self):
+        assert anki().changed == (1 + 2 + 4) + 1 + 0 + 1 + 5
+
+    def test_duration_is_the_copy_and_the_database_work(self):
+        assert anki().duration_seconds == 1.25
+
+    def test_a_failed_sync_changed_nothing(self):
+        failed = AnkiSyncResult.failed(ERROR)
+        assert (failed.ok, failed.changed, failed.error.name) == (False, 0, "OSError")
+
+    def test_json_round_trip(self):
+        original = anki(error=ERROR, reviews_reloaded=True)
+        assert AnkiSyncResult.model_validate_json(original.model_dump_json()) == original
+
+    def test_is_frozen(self):
+        with pytest.raises(ValidationError):
+            anki().reviews_added = 9
+
+    def test_it_renders_the_counts(self, render):
+        text = render(anki())
+        assert "Anki sync" in text and "cards" in text and "reviews" in text and "ok" in text
+
+    def test_it_renders_a_reload(self, render):
+        assert "read again" in render(anki(reviews_reloaded=True))
+        assert "read again" not in render(anki())
+
+    def test_it_renders_the_error_of_a_failed_sync(self, render):
+        text = render(AnkiSyncResult.failed(ERROR))
+        assert "disk full" in text and "nothing was changed" in text and "failed" in text
+
+
+class TestSyncResultWithAnki:
+    def test_anki_is_a_system_like_the_others(self):
+        r = composite(obsidian=result(), anki=anki())
+        assert list(r.systems) == ["obsidian", "anki"]
+        assert r.systems["anki"] is r.anki
+
+    def test_anki_alone(self):
+        r = composite(anki=anki())
+        assert list(r.systems) == ["anki"] and r.obsidian is None
+
+    def test_changes_add_up_over_the_systems(self):
+        assert composite(obsidian=result(), anki=anki()).changed == 7 + anki().changed
+
+    def test_a_failed_anki_does_not_fail_obsidian(self):
+        r = composite(obsidian=result(), anki=AnkiSyncResult.failed(ERROR))
+        assert (r.ok, r.failed) == (False, ["anki"])
+        assert r.obsidian.ok
+
+    def test_it_renders_both(self, render):
+        text = render(composite(obsidian=result(), anki=anki()))
+        assert "Obsidian sync" in text and "Anki sync" in text

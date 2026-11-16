@@ -130,6 +130,130 @@ class ObsidianSyncResult(BaseModel):
         )
 
 
+class AnkiTableChanges(BaseModel):
+    """What a sync did to one of the Anki tables.
+
+    Attributes:
+        added: Rows that were not in the database before.
+        updated: Rows whose data differs from the collection.
+        unchanged: Rows identical to the collection.
+        removed: Rows deleted because they are no longer in the collection.
+
+    Examples:
+        >>> changes = AnkiTableChanges(added=1, updated=2, unchanged=7, removed=1)
+        >>> changes.total, changes.changed
+        (10, 4)
+    """
+
+    model_config = ConfigDict(frozen=True)
+
+    added: int = Field(0, ge=0, description="Rows that were not in the database before")
+    updated: int = Field(0, ge=0, description="Rows whose data differs from the collection")
+    unchanged: int = Field(0, ge=0, description="Rows identical to the collection")
+    removed: int = Field(0, ge=0, description="Rows deleted because they are no longer in the collection")
+
+    @computed_field(description="Rows in the table after the sync")
+    @property
+    def total(self) -> int:
+        return self.added + self.updated + self.unchanged
+
+    @computed_field(description="Rows the sync added, updated or removed")
+    @property
+    def changed(self) -> int:
+        return self.added + self.updated + self.removed
+
+
+class AnkiSyncResult(BaseModel):
+    """What syncing the Anki collection did to the database.
+
+    A failed sync has ``error`` set and everything at zero: the database changes of a sync happen in
+    one transaction, so a failure changes nothing.
+
+    Attributes:
+        cards: What happened to the cards.
+        notes: What happened to the notes (their tags and type).
+        decks: What happened to the decks.
+        deck_options: What happened to the options presets.
+        reviews_added: Entries added to the review history.
+        reviews_total: Entries in the review history after the sync.
+        reviews_reloaded: Whether the whole history was read again, because entries before the newest stored one
+            had been added or removed (for example by syncing a phone). Normally only the new entries are read.
+        copy_seconds: Time spent copying the collection.
+        database_seconds: Time spent reading the copy and writing to the database.
+        error: Why the sync failed, or ``None`` if it succeeded.
+
+    Examples:
+        >>> result = AnkiSyncResult(cards=AnkiTableChanges(unchanged=10), reviews_added=3, reviews_total=13)
+        >>> result.ok, result.changed
+        (True, 3)
+        >>> failed = AnkiSyncResult.failed(ErrorInfo(name="AnkiCollectionNotFoundError", message="gone", traceback=""))
+        >>> failed.ok, failed.changed
+        (False, 0)
+    """
+
+    model_config = ConfigDict(frozen=True)
+
+    cards: AnkiTableChanges = Field(default_factory=AnkiTableChanges, description="What happened to the cards")
+    notes: AnkiTableChanges = Field(default_factory=AnkiTableChanges, description="What happened to the notes")
+    decks: AnkiTableChanges = Field(default_factory=AnkiTableChanges, description="What happened to the decks")
+    deck_options: AnkiTableChanges = Field(default_factory=AnkiTableChanges, description="What happened to the options presets")
+    reviews_added: int = Field(0, ge=0, description="Entries added to the review history")
+    reviews_total: int = Field(0, ge=0, description="Entries in the review history after the sync")
+    reviews_reloaded: bool = Field(False, description="Whether the whole review history was read again")
+    copy_seconds: float = Field(0.0, ge=0, description="Time spent copying the collection")
+    database_seconds: float = Field(0.0, ge=0, description="Time spent reading the copy and writing to the database")
+    error: ErrorInfo | None = Field(None, description="Why the sync failed, or None if it succeeded")
+
+    @classmethod
+    def failed(cls, error: ErrorInfo) -> "AnkiSyncResult":
+        """The result of a sync that failed with the given error (nothing was changed)."""
+        return cls(error=error)
+
+    @computed_field(description="Whether the sync succeeded")
+    @property
+    def ok(self) -> bool:
+        return self.error is None
+
+    @computed_field(description="Rows and history entries the sync added, updated or removed")
+    @property
+    def changed(self) -> int:
+        return sum(table.changed for table in (self.cards, self.notes, self.decks, self.deck_options)) + self.reviews_added
+
+    @computed_field(description="Time the whole sync took")
+    @property
+    def duration_seconds(self) -> float:
+        return self.copy_seconds + self.database_seconds
+
+    def __rich__(self) -> Panel:
+        """Render the result as a :class:`rich.panel.Panel`: what changed in each table, or the error if it failed.
+
+        Examples:
+            >>> isinstance(AnkiSyncResult().__rich__(), Panel)
+            True
+        """
+        if self.error is not None:
+            parts: list[RenderableType] = [Text("nothing was changed", style="dim"), self.error]
+        else:
+            grid = Table.grid(padding=(0, 2))
+            grid.add_column(style="dim")
+            for _ in range(4):
+                grid.add_column(justify="right")
+            grid.add_row("", "[dim]added[/]", "[dim]updated[/]", "[dim]unchanged[/]", "[dim]removed[/]")
+            for name, table in (("cards", self.cards), ("notes", self.notes), ("decks", self.decks), ("options", self.deck_options)):
+                grid.add_row(name, f"[green]{table.added}[/]", f"[yellow]{table.updated}[/]", f"[dim]{table.unchanged}[/]", f"[red]{table.removed}[/]")
+            grid.add_row("reviews", f"[green]{self.reviews_added}[/]", "", f"[dim]{self.reviews_total - self.reviews_added}[/]", "")
+            parts = [grid]
+            if self.reviews_reloaded:
+                parts.append(Text("the whole review history was read again", style="dim"))
+            parts.append(Text(f"copy {self.copy_seconds:.2f} s, database {self.database_seconds:.2f} s", style="dim"))
+        return Panel(
+            Group(*parts),
+            title="[bold]Anki[/] sync",
+            subtitle="[green]ok[/]" if self.ok else "[red]failed[/]",
+            expand=False,
+        )
+
+
 class SyncResult(BaseModel):
     """The outcome of syncing several systems, one field per system.
 
@@ -141,6 +265,7 @@ class SyncResult(BaseModel):
         started_at: When the sync started.
         duration_seconds: Time the whole run took.
         obsidian: Result of the Obsidian vault sync.
+        anki: Result of the Anki collection sync.
 
     Examples:
         >>> obsidian = ObsidianSyncResult(added=1, updated=0, unchanged=4, removed=0)
@@ -156,11 +281,12 @@ class SyncResult(BaseModel):
     started_at: datetime = Field(..., description="When the sync started")
     duration_seconds: float = Field(..., ge=0, description="Time the whole run took")
     obsidian: ObsidianSyncResult | None = Field(None, description="Result of the Obsidian vault sync")
+    anki: AnkiSyncResult | None = Field(None, description="Result of the Anki collection sync")
 
     @property
-    def systems(self) -> dict[str, ObsidianSyncResult]:
+    def systems(self) -> dict[str, ObsidianSyncResult | AnkiSyncResult]:
         """The results of the systems that took part, by system name."""
-        results = {"obsidian": self.obsidian}
+        results = {"obsidian": self.obsidian, "anki": self.anki}
         return {name: result for name, result in results.items() if result is not None}
 
     @computed_field(description="Whether every system that took part succeeded")

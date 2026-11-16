@@ -107,3 +107,62 @@ class TestAnAnkiOnlySession:
         assert result.obsidian.error.name == "FileNotFoundError"
         assert episteme.data.count_notes() == 0
         assert set(episteme.data.tables()) >= {"notes"}
+
+
+from anki_collection import sample_collection  # noqa: E402
+from episteme.anki import AnkiCollection  # noqa: E402
+from episteme.cli import AnkiSettings  # noqa: E402
+
+
+def settings_with_anki(vault_root: Path, collection: Path | None, timezone: str = "Europe/Warsaw") -> EpistemeSettings:
+    return EpistemeSettings(
+        obsidian=ObsidianSettings(vault_root=vault_root),
+        anki=AnkiSettings(collection_path=collection, timezone=timezone),
+        data=DataSettings(url=":memory:"),
+    )
+
+
+class TestAnki:
+    def test_the_collection_is_not_read_when_episteme_is_created(self, vault_root: Path, tmp_path: Path):
+        episteme = Episteme(settings_with_anki(vault_root, tmp_path / "no-such.anki2"))
+        assert isinstance(episteme.anki, AnkiCollection)
+        assert episteme.data.tables()  # usable, though the collection does not exist
+
+    def test_syncing_anki(self, vault_root: Path, tmp_path: Path):
+        episteme = Episteme(settings_with_anki(vault_root, sample_collection(tmp_path / "collection.anki2")))
+        result = episteme.sync_anki()
+        assert result.ok and (result.cards.added, result.reviews_added) == (9, 9)
+        assert result.copy_seconds > 0 and result.database_seconds > 0
+        again = episteme.sync_anki()
+        assert again.changed == 0 and again.cards.unchanged == 9
+
+    def test_a_missing_collection_raises_from_sync_anki(self, vault_root: Path, tmp_path: Path):
+        from episteme.anki import AnkiCollectionNotFoundError
+
+        episteme = Episteme(settings_with_anki(vault_root, tmp_path / "missing.anki2"))
+        with pytest.raises(AnkiCollectionNotFoundError):
+            episteme.sync_anki()
+
+    def test_sync_includes_anki_when_the_collection_is_configured(self, vault_root: Path, tmp_path: Path):
+        episteme = Episteme(settings_with_anki(vault_root, sample_collection(tmp_path / "collection.anki2")))
+        result = episteme.sync()
+        assert result.ok and list(result.systems) == ["obsidian", "anki"]
+        assert result.obsidian.added == 2 and result.anki.cards.added == 9
+        assert result.changed == 2 + result.anki.changed
+
+    def test_sync_leaves_anki_out_when_it_is_not_configured(self, vault_root: Path):
+        result = Episteme(settings_with_anki(vault_root, None)).sync()
+        assert result.anki is None and list(result.systems) == ["obsidian"]
+
+    def test_a_failed_anki_sync_is_reported_and_obsidian_still_syncs(self, vault_root: Path, tmp_path: Path, capsys):
+        episteme = Episteme(settings_with_anki(vault_root, tmp_path / "missing.anki2"))
+        result = episteme.sync()
+        assert (result.ok, result.failed) == (False, ["anki"])
+        assert result.anki.error.name == "AnkiCollectionNotFoundError"
+        assert result.obsidian.ok and episteme.data.count_notes() == 2
+        assert "AnkiCollectionNotFoundError" in capsys.readouterr().out  # printed, like a failed Obsidian sync
+
+    def test_a_failed_obsidian_sync_does_not_stop_anki(self, tmp_path: Path):
+        episteme = Episteme(settings_with_anki(tmp_path / "no-such-vault", sample_collection(tmp_path / "collection.anki2")))
+        result = episteme.sync()
+        assert result.failed == ["obsidian"] and result.anki.ok

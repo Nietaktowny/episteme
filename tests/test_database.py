@@ -9,12 +9,17 @@ from episteme.database import Database, DatabaseEngine, MigrationError, QuerySto
 from episteme.database._duckdb import DuckDBEngine
 from episteme.models.obsidian import MarkdownNote
 
-EXPECTED_TABLES = {"notes", "schema_history", "tasks"}
+ANKI_TABLES = {"anki_collection", "anki_decks", "anki_deck_options", "anki_notes", "anki_cards", "anki_reviews"}
+EXPECTED_TABLES = {"notes", "schema_history", "tasks"} | ANKI_TABLES
 EXPECTED_INDEXES = {
     "idx_notes_name",
     "idx_notes_category_directory",
     "idx_notes_created_at",
     "idx_notes_updated_at",
+    "idx_anki_cards_note_id",
+    "idx_anki_cards_deck_id",
+    "idx_anki_reviews_card_id",
+    "idx_anki_reviews_review_day",
 }
 
 

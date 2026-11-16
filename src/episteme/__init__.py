@@ -4,6 +4,7 @@ The :class:`Episteme` class is the entry point. It groups the supported
 systems, each living in its own module:
 
 * Obsidian - :class:`episteme.obsidian.ObsidianVault`
+* Anki - :class:`episteme.anki.AnkiCollection`, read-only statistics and scheduling
 * Scheduler - :class:`episteme.scheduler.EpistemeScheduler`, which runs recurring jobs such as syncing
 
 Data models are defined in :mod:`episteme.models`, storage lives in
@@ -16,6 +17,7 @@ from datetime import date, datetime
 
 from rich import print
 
+from episteme.anki import AnkiCollection
 from episteme.cli import EpistemeSettings
 from episteme.database import Database
 from episteme.obsidian import ObsidianVault
@@ -23,11 +25,11 @@ from episteme.scheduler import EpistemeScheduler
 
 from episteme.models.database import Snapshot
 from episteme.models.errors import ErrorInfo
-from episteme.models.sync import ObsidianSyncResult, SyncResult
+from episteme.models.sync import AnkiSyncResult, ObsidianSyncResult, SyncResult
 
 logger = logging.getLogger("episteme")
 
-__all__ = ["Episteme", "EpistemeSettings", "ObsidianVault"]
+__all__ = ["AnkiCollection", "Episteme", "EpistemeSettings", "ObsidianVault"]
 
 class Episteme:
     """Entry point grouping all knowledge systems.
@@ -38,6 +40,7 @@ class Episteme:
         data: Database storing Episteme's data.
         obsidian: Obsidian vault. It is scanned lazily, the first time its contents
             are needed (for example by :meth:`sync_obsidian`), not when Episteme is created.
+        anki: Anki collection. Nothing is read until :meth:`sync_anki` takes a snapshot of it.
         scheduler: Scheduler for recurring jobs. It is created but not started: add jobs
             with ``scheduler.add_job`` and call ``scheduler.start()``, which blocks.
 
@@ -70,6 +73,7 @@ class Episteme:
         self.settings: EpistemeSettings = settings if settings is not None else EpistemeSettings()
         self.data = Database(self.settings.data)
         self.obsidian: ObsidianVault = ObsidianVault(self.settings.obsidian)
+        self.anki: AnkiCollection = AnkiCollection(self.settings.anki)
         self.scheduler = EpistemeScheduler(self.settings.scheduler)
 
     def sync_obsidian(self) -> ObsidianSyncResult:
@@ -103,6 +107,43 @@ class Episteme:
         tasks = self.obsidian.scan_for_tasks(require_id=True)  # only tasks with an id written in their note are stored
         result = self.data.sync_notes(self.obsidian, tasks)
         return result.model_copy(update={"mapping_seconds": self.obsidian.statistics.mapping_duration or 0.0})
+
+    def sync_anki(self) -> AnkiSyncResult:
+        """Read the Anki collection and bring the database's Anki statistics in line with it.
+
+        Only statistics and scheduling are read: the state of every card, the review history, the
+        options of the decks and the tags of the notes. The text of notes and cards is never read.
+        The collection is copied first and only the copy is read, so Anki may stay open.
+
+        Returns:
+            What changed in each table, with the time the copy and the database work took.
+
+        Raises:
+            AnkiCollectionNotFoundError: If the collection cannot be found (see :class:`~episteme.cli.AnkiSettings`).
+            UnsupportedAnkiSchemaError: If the collection is older than Anki 2.1.50 wrote.
+            Exception: Whatever else fails while reading or syncing; nothing is changed in the database in that
+                case. :meth:`sync` reports such failures as data instead.
+
+        Examples:
+            >>> import sqlite3, tempfile
+            >>> from pathlib import Path
+            >>> from episteme.cli import AnkiSettings, DataSettings
+            >>> with tempfile.TemporaryDirectory() as tmp:
+            ...     episteme = Episteme(EpistemeSettings(
+            ...         anki=AnkiSettings(collection_path=Path(tmp) / "missing.anki2"),
+            ...         data=DataSettings(url=":memory:"),
+            ...     ))
+            ...     try:
+            ...         episteme.sync_anki()
+            ...     except FileNotFoundError as error:
+            ...         type(error).__name__
+            'AnkiCollectionNotFoundError'
+        """
+        started = time.perf_counter()
+        with self.anki.snapshot() as snapshot:
+            copy_seconds = time.perf_counter() - started
+            result = self.data.sync_anki(snapshot)
+        return result.model_copy(update={"copy_seconds": copy_seconds})
 
     def snapshot(self, label: str | None = None, overwrite: bool = False) -> Snapshot:
         """Sync the vault, then keep its state in a Parquet file inside the vault.
@@ -148,7 +189,9 @@ class Episteme:
     def sync(self) -> SyncResult:
         """Sync every system into the database.
 
-        A system that fails does not stop the others and does not raise: its
+        Obsidian is always synced. Anki is synced only when its collection is named in the
+        settings (``ANKI__COLLECTION_PATH``); use :meth:`sync_anki` to sync it from its default
+        place. A system that fails does not stop the others and does not raise: its
         result carries the error, and the rest of the report is unaffected.
         ``KeyboardInterrupt`` and the like are not caught. A failure is logged
         with its traceback and its error is printed.
@@ -178,8 +221,17 @@ class Episteme:
             logger.exception("Syncing the Obsidian vault failed")
             obsidian = ObsidianSyncResult.failed(ErrorInfo.from_exception(error))
             print(obsidian.error)
+        anki = None
+        if self.anki.is_configured:
+            try:
+                anki = self.sync_anki()
+            except Exception as error:
+                logger.exception("Syncing the Anki collection failed")
+                anki = AnkiSyncResult.failed(ErrorInfo.from_exception(error))
+                print(anki.error)
         return SyncResult(
             started_at=started_at,
             duration_seconds=time.perf_counter() - started,
             obsidian=obsidian,
+            anki=anki,
         )

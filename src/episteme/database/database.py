@@ -3,7 +3,7 @@
 import json
 import logging
 import time
-from datetime import date, datetime, time as day_time
+from datetime import UTC, date, datetime, time as day_time
 import unicodedata
 from collections.abc import Iterable, Iterator
 from pathlib import Path, PurePosixPath
@@ -13,9 +13,10 @@ from episteme.cli import DataSettings
 from episteme.database.engine import DatabaseEngine, Row, create_engine
 from episteme.database.migrations import Migrations
 from episteme.database.queries import QueryStore
+from episteme.models.anki import AnkiSource
 from episteme.models.database import Snapshot
 from episteme.models.obsidian import CategoryDirectory, MarkdownNote, Priority, Task, TaskState
-from episteme.models.sync import ObsidianSyncResult
+from episteme.models.sync import AnkiSyncResult, AnkiTableChanges, ObsidianSyncResult
 
 
 logger = logging.getLogger("episteme")
@@ -46,7 +47,7 @@ class Database:
     Examples:
         >>> database = Database(DataSettings(url=":memory:"))
         >>> sorted(database.tables())
-        ['notes', 'schema_history', 'tasks']
+        ['anki_cards', 'anki_collection', 'anki_deck_options', 'anki_decks', 'anki_notes', 'anki_reviews', 'notes', 'schema_history', 'tasks']
         >>> database.close()
     """
 
@@ -491,6 +492,137 @@ class Database:
     def count_tasks(self) -> int:
         """Number of stored tasks."""
         return self.engine.fetch_one(self.queries["tasks_count"])["count"]
+
+    ANKI_BATCH = 20_000
+    """How many rows are sent to the database in one statement when syncing Anki."""
+
+    def _sync_anki_rows(
+        self, rows: Iterable[dict[str, Any]], key: str, select: str, upsert: str, delete: str,
+    ) -> AnkiTableChanges:
+        """Make one Anki table match ``rows`` exactly; must run inside a transaction.
+
+        Rows are compared as data with what is stored: new ones are inserted, changed ones rewritten, identical
+        ones left alone and stored ones that are no longer wanted deleted. Each statement takes many rows at once
+        (an insert row by row is orders of magnitude slower in DuckDB). If a key appears more than once, the last row wins.
+
+        Args:
+            rows: The rows wanted, as dumped from the models; their keys are the table's columns.
+            key: The column that identifies a row.
+            select: Query of the stored rows, with the same columns.
+            upsert: Statement that stores the rows of its ``$rows`` list.
+            delete: Statement that deletes the rows of its ``$ids`` list.
+        """
+        wanted = {row[key]: row for row in rows}
+        stored = {row[key]: row for row in self.engine.fetch_all(select)}
+        removed = list(stored.keys() - wanted.keys())
+        written = [row for identifier, row in wanted.items() if stored.get(identifier) != row]
+        if removed:
+            self.engine.execute(delete, {"ids": removed})
+        for start in range(0, len(written), self.ANKI_BATCH):
+            self.engine.execute(upsert, {"rows": written[start:start + self.ANKI_BATCH]})
+        added = len(wanted.keys() - stored.keys())
+        return AnkiTableChanges(
+            added=added, updated=len(written) - added, unchanged=len(wanted) - len(written), removed=len(removed),
+        )
+
+    def sync_anki(self, source: AnkiSource) -> AnkiSyncResult:
+        """Make the stored Anki statistics match a collection, in one transaction.
+
+        The collection's decks, options presets, notes (their type and tags), cards (their scheduling state) and
+        the collection's own settings are made to match exactly, as :meth:`sync_notes` does for notes. The review
+        history is different: it is large and only grows, so only the entries newer than the newest stored one are
+        read. If the stored history no longer matches the collection's (an older entry was added, for example when
+        reviews done on a phone were synced, or removed), it is replaced in full. If anything fails nothing is changed.
+
+        What is stored is statistics and scheduling only; see :mod:`episteme.models.anki` for what that is.
+
+        Args:
+            source: The collection to read, e.g. a :class:`episteme.anki.AnkiSnapshot`.
+
+        Returns:
+            What changed in each table, and how long the database work took.
+
+        Examples:
+            >>> from datetime import date, datetime
+            >>> from episteme.models.anki import AnkiCollectionInfo, AnkiDeck, AnkiReview
+            >>> class Source:
+            ...     def info(self):
+            ...         return AnkiCollectionInfo(schema_version=18, scheduler_version=2, created_date=date(2021, 10, 19),
+            ...                                   rollover_hour=4, fsrs_enabled=True, modified_at=datetime(2026, 11, 1))
+            ...     def decks(self):
+            ...         return [AnkiDeck(deck_id=1, name="Default")]
+            ...     def deck_options(self): return []
+            ...     def notes(self): return iter([])
+            ...     def cards(self): return iter([])
+            ...     def count_reviews(self, up_to=None): return 1
+            ...     def reviews(self, after=None):
+            ...         review = AnkiReview(review_id=1_700_000_000_000, card_id=5, reviewed_at=datetime(2023, 11, 14, 22, 13, 20),
+            ...                             review_day=date(2023, 11, 14), rating=3, kind="review")
+            ...         return iter([review] if review.review_id > (after or 0) else [])
+            >>> database = Database(DataSettings(url=":memory:"))
+            >>> result = database.sync_anki(Source())
+            >>> result.decks.added, result.reviews_added, result.ok
+            (1, 1, True)
+            >>> again = database.sync_anki(Source())
+            >>> again.decks.unchanged, again.reviews_added, again.reviews_total
+            (1, 0, 1)
+            >>> database.close()
+        """
+        started = time.perf_counter()
+        info = source.info()
+        with self.engine.transaction():
+            self.engine.execute(self.queries["anki_collection_upsert"], {**info.model_dump(), "synced_at": datetime.now(UTC).replace(tzinfo=None)})
+            decks = self._sync_anki_rows(
+                (deck.model_dump() for deck in source.decks()), "deck_id",
+                self.queries["anki_decks_select"], self.queries["anki_decks_upsert"], self.queries["anki_decks_delete"],
+            )
+            deck_options = self._sync_anki_rows(
+                (options.model_dump() for options in source.deck_options()), "options_id",
+                self.queries["anki_deck_options_select"], self.queries["anki_deck_options_upsert"],
+                self.queries["anki_deck_options_delete"],
+            )
+            notes = self._sync_anki_rows(
+                (note.model_dump() for note in source.notes()), "note_id",
+                self.queries["anki_notes_select"], self.queries["anki_notes_upsert"], self.queries["anki_notes_delete"],
+            )
+            cards = self._sync_anki_rows(
+                (card.model_dump() for card in source.cards()), "card_id",
+                self.queries["anki_cards_select"], self.queries["anki_cards_upsert"], self.queries["anki_cards_delete"],
+            )
+            reviews_added, reviews_total, reloaded = self._sync_anki_reviews(source)
+        return AnkiSyncResult(
+            cards=cards, notes=notes, decks=decks, deck_options=deck_options,
+            reviews_added=reviews_added, reviews_total=reviews_total, reviews_reloaded=reloaded,
+            database_seconds=time.perf_counter() - started,
+        )
+
+    def _sync_anki_reviews(self, source: AnkiSource) -> tuple[int, int, bool]:
+        """Bring the stored review history up to date; must run inside a transaction.
+
+        Continues after the newest stored entry if the collection has exactly as many entries up to it as are
+        stored; otherwise the history is replaced in full.
+
+        Returns:
+            Entries added, entries stored afterwards and whether the whole history was read again.
+        """
+        stored = self.engine.fetch_one(self.queries["anki_reviews_stats"])
+        reloaded = stored["count"] > 0 and source.count_reviews(stored["newest"]) != stored["count"]
+        if reloaded or stored["count"] == 0:
+            self.engine.execute(self.queries["anki_reviews_clear"])
+            after, kept = None, 0
+        else:
+            after, kept = stored["newest"], stored["count"]
+        added = 0
+        batch: list[dict[str, Any]] = []
+        for review in source.reviews(after):
+            batch.append(review.model_dump())
+            if len(batch) >= self.ANKI_BATCH:
+                self.engine.execute(self.queries["anki_reviews_insert"], {"rows": batch})
+                added, batch = added + len(batch), []
+        if batch:
+            self.engine.execute(self.queries["anki_reviews_insert"], {"rows": batch})
+            added += len(batch)
+        return added, kept + added, reloaded
 
     def snapshot(self, path: Path | str, overwrite: bool = False) -> Snapshot:
         """Write the current state of the notes to a Parquet file, to compare against later.

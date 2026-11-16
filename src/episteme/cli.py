@@ -7,6 +7,7 @@ values use ``__`` as delimiter, e.g. ``OBSIDIAN__VAULT_ROOT``) or through a
 
 from enum import StrEnum
 from pathlib import Path
+from zoneinfo import ZoneInfo, ZoneInfoNotFoundError
 
 from pydantic_settings import BaseSettings, SettingsConfigDict
 from pydantic import Field, BaseModel, field_validator
@@ -51,6 +52,52 @@ class ObsidianSettings(BaseModel):
         if folder.is_absolute() or ".." in folder.parts:
             raise ValueError(f"snapshots_dir '{folder}' must be a folder inside the vault, relative to its root.")
         return folder
+
+class AnkiSettings(BaseModel):
+    """Settings describing the Anki collection Episteme reads statistics from.
+
+    Episteme only ever *reads* Anki, and never the content of the cards: it takes scheduling
+    state, review history, deck options and tags.
+
+    Attributes:
+        collection_path: Path to the ``collection.anki2`` file. When it is not set, the
+            collection is looked for in Anki's data folder (see :attr:`profile`); the sync of
+            :meth:`episteme.Episteme.sync` only includes Anki when this path is set.
+        profile: Name of the Anki profile whose collection is used when ``collection_path`` is not set.
+            When it is not set either, the only profile found is used.
+        timezone: IANA name of the time zone that decides which day a review belongs to
+            (``Europe/Warsaw``). Defaults to the time zone of this machine.
+        allow_content: Whether the text of notes may be read on demand
+            (:meth:`episteme.anki.AnkiCollection.note_contents`). Off by default. It never changes what is synced:
+            the content is returned to the caller and is not stored in the database.
+
+    Examples:
+        >>> settings = AnkiSettings()
+        >>> settings.collection_path is None, settings.profile is None
+        (True, True)
+        >>> AnkiSettings(collection_path="~/Anki2/User 1/collection.anki2").collection_path
+        PosixPath('~/Anki2/User 1/collection.anki2')
+        >>> AnkiSettings(timezone="Europe/Warsaw").timezone
+        'Europe/Warsaw'
+        >>> AnkiSettings().allow_content
+        False
+    """
+
+    collection_path: Path | None = Field(None, description="Path to the collection.anki2 file of the Anki profile")
+    profile: str | None = Field(None, description="Anki profile to use when the collection path is not set")
+    timezone: str | None = Field(None, description="IANA time zone that decides which day a review belongs to (default: this machine's)")
+
+    allow_content: bool = Field(False, description="Whether the text of notes may be read on demand (never stored)")
+
+    @field_validator("timezone")
+    @classmethod
+    def _known_timezone(cls, name: str | None) -> str | None:
+        if name is not None:
+            try:
+                ZoneInfo(name)
+            except (ZoneInfoNotFoundError, ValueError):
+                raise ValueError(f"'{name}' is not a known time zone (expected an IANA name such as 'Europe/Warsaw').") from None
+        return name
 
 class DatabaseEngineName(StrEnum):
     """Database engines Episteme can store its data in.
@@ -116,6 +163,7 @@ class EpistemeSettings(BaseSettings):
 
     Attributes:
         obsidian: Obsidian vault settings.
+        anki: Anki collection settings.
         data: Database settings.
         scheduler: Scheduler settings.
 
@@ -142,5 +190,6 @@ class EpistemeSettings(BaseSettings):
     )
 
     obsidian: ObsidianSettings = Field(default_factory=ObsidianSettings, description="Obsidian vault settings")
+    anki: AnkiSettings = Field(default_factory=AnkiSettings, description="Anki collection settings")
     data: DataSettings = Field(default_factory=DataSettings, description="Database settings")
     scheduler: SchedulerSettings = Field(default_factory=SchedulerSettings, description="Scheduler settings")
