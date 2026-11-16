@@ -318,7 +318,9 @@ class TestLegacyDatabase:
 
     def test_is_brought_under_migration_control(self, legacy_settings: DataSettings):
         with Database(legacy_settings) as database:
-            assert [record.version for record in database.migrations.applied()] == ["1", "2"]
+            applied = [record.version for record in database.migrations.applied()]
+            assert applied == [migration.version for migration in database.migrations.available()]
+            assert applied[:2] == ["1", "2"]
 
     def test_old_meta_table_is_dropped(self, legacy_settings: DataSettings):
         with Database(legacy_settings) as database:

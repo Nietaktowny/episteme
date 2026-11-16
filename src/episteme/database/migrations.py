@@ -34,12 +34,13 @@ class Migrations:
         >>> from episteme.database.engine import create_engine
         >>> engine = create_engine(DataSettings(url=":memory:"))
         >>> migrations = Migrations(engine, QueryStore(engine.sql_dir / "queries"))
-        >>> [m.version for m in migrations.pending()]
+        >>> pending = [m.version for m in migrations.pending()]
+        >>> pending[:2]
         ['1', '2']
-        >>> [m.version for m in migrations.migrate()]
-        ['1', '2']
-        >>> migrations.pending(), migrations.current_version()
-        ([], '2')
+        >>> [m.version for m in migrations.migrate()] == pending
+        True
+        >>> migrations.pending(), migrations.current_version() == pending[-1]
+        ([], True)
         >>> engine.close()
     """
 

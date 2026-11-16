@@ -80,12 +80,30 @@ class Database:
         return [row["name"] for row in self.engine.fetch_all(self.queries["indexes"])]
 
     def tables(self) -> list[str]:
-        """Names of the tables in the database.
+        """Names of the tables in the database (views are not included, see :meth:`views`).
 
         Returns:
             Table names, in no particular order.
         """
         return [row["name"] for row in self.engine.fetch_all(self.queries["tables"])]
+
+    def views(self) -> dict[str, str | None]:
+        """The views of the database, each with its description.
+
+        The views decode the vault's conventions (note types, properties, links) so that
+        queries can use them directly, e.g. ``SELECT * FROM evergreen_notes``.
+
+        Returns:
+            View name to description (``None`` if a view has no comment), sorted by name.
+
+        Examples:
+            >>> database = Database(DataSettings(url=":memory:"))
+            >>> "evergreen_notes" in database.views()
+            True
+            >>> database.close()
+        """
+        rows = self.engine.fetch_all(self.queries["views"])
+        return {row["name"]: row["comment"] for row in sorted(rows, key=lambda row: row["name"])}
 
     @staticmethod
     def _key(path: PurePosixPath | Path | str) -> str:
