@@ -12,6 +12,7 @@ from pathlib import Path
 from datetime import datetime
 import time
 from functools import cached_property
+import re
 
 from rich.table import Table
 from rich import print
@@ -91,8 +92,8 @@ class ObsidianVault:
             ...     (root / "10_Projects").mkdir()
             ...     _ = (root / "10_Projects" / "a.md").write_text("A")
             ...     vault = ObsidianVault(EpistemeSettings(obsidian=ObsidianSettings(vault_root=root)))
-            ...     repr(vault)
-            "ObsidianVault(root=PosixPath('/tmp/tmpabcd1234'), notes=1, directories=1)"
+            ...     repr(vault).replace(str(root), "<root>")
+            "ObsidianVault(root=PosixPath('<root>'), notes=1, directories=1)"
         """
         return f"ObsidianVault(root={self.root.path!r}, notes={self.root.note_count()}, directories={self.root.directory_count()})"
 
@@ -111,7 +112,7 @@ class ObsidianVault:
             ...     table.title
             ...     table.row_count
             'Obsidian Vault Overview'
-            4
+            5
         """
         table = Table(title="Obsidian Vault Overview", show_header=True, header_style="bold magenta")
         table.add_column("Property", style="dim", width=30)
@@ -417,12 +418,12 @@ class ObsidianVault:
 
         self.root = root
         self.mapped_at = datetime.now()
+        self.__dict__.pop("statistics", None)
 
         logger.info(f"Mapped Obsidian vault at {self.settings.obsidian.vault_root}, containing {root.note_count()} notes in {root.directory_count()} directories.")
         end_time = time.perf_counter()
         self.__mapping_duration = end_time - start_time
         logger.debug(f"Mapping took {self.__mapping_duration:.2f} seconds.")
-        print(self)
         return root
 
     @cached_property
@@ -450,3 +451,187 @@ class ObsidianVault:
             calculated_at=datetime.now(),
             mapping_duration=self.__mapping_duration
         )
+
+    def _build_template_filename(self, template_name: str, template_version: float = 1.0) -> str:
+        """Build the filename for a template note.
+
+        Args:
+            template_name: Name of the template (without extension).
+            template_version: Optional version of the template. Default is 1.0.
+        
+        Returns:
+            Filename for the template note, including version.
+        """
+        return f"v{template_version}_{template_name}.md"
+
+    def get_category_dir(self, category: CategoryDirectory) -> VaultDirectory:
+        """Get the mapped top-level directory of a category.
+
+        Args:
+            category: Category whose directory to get. Its value is the
+                directory name inside the vault root.
+
+        Returns:
+            The :class:`VaultDirectory` of the category.
+
+        Raises:
+            FileNotFoundError: If the category directory does not exist in the
+                mapped vault (missing, or listed in ``skip_dirs``).
+
+        Examples:
+            >>> import tempfile
+            >>> from episteme.cli import ObsidianSettings
+            >>> with tempfile.TemporaryDirectory() as tmp:
+            ...     root = Path(tmp)
+            ...     (root / "10_Projects").mkdir()
+            ...     vault = ObsidianVault(EpistemeSettings(obsidian=ObsidianSettings(vault_root=root)))
+            ...     vault.get_category_dir(CategoryDirectory.PROJECTS).path == root / "10_Projects"
+            True
+        """
+        directory = self.root.get_dir(self.root.path / category.value)
+        if directory is None:
+            raise FileNotFoundError(
+                f"Category directory '{category.value}' not found in the vault."
+            )
+        return directory
+
+    def _get_newest_template_version(self, template_name: str) -> float | None:
+        """Get the newest version of a template note.
+
+        Args:
+            template_name: Name of the template (without extension).
+
+        Returns:
+            The newest version number of the template, or None if no template exists.
+
+        Raises:
+            FileNotFoundError: If the templates category directory does not exist.
+        """
+        versions = []
+        for note in self.get_category_dir(CategoryDirectory.TEMPLATES).iter_notes():
+            if note.name.startswith("v") and note.name.endswith(f"_{template_name}"):
+                try:
+                    version_str = note.name.split("_")[0][1:]  # Extract the version part after 'v'
+                    version = float(version_str)
+                    versions.append(version)
+                except ValueError:
+                    logger.warning(f"Invalid template version format in note '{note.name}'.")
+        return max(versions) if versions else None
+
+    def _resolve_placeholders(self, content: str, title: str | None = None) -> str:
+        r"""Replace supported Obsidian template placeholders with their values.
+
+        Supported (whitespace inside the braces is ignored):
+
+        * ``{{date:YYYY-MM-DD}}`` - today's date.
+        * ``{{time}}`` - current time as ``HH:mm``.
+        * ``{{title}}`` - the given ``title``; left untouched when ``title`` is ``None``.
+
+        Any other placeholder is left untouched.
+
+        Args:
+            content: Template text.
+            title: Title of the new note, used for ``{{title}}``.
+
+        Returns:
+            Text with the supported placeholders replaced.
+
+        Examples:
+            >>> import tempfile
+            >>> from episteme.cli import ObsidianSettings
+            >>> with tempfile.TemporaryDirectory() as tmp:
+            ...     vault = ObsidianVault(EpistemeSettings(obsidian=ObsidianSettings(vault_root=tmp)))
+            ...     vault._resolve_placeholders("# {{title}}", title="Idea")
+            ...     vault._resolve_placeholders("# {{title}}")
+            ...     vault._resolve_placeholders("{{unknown}}")
+            '# Idea'
+            '# {{title}}'
+            '{{unknown}}'
+        """
+        placeholders = {
+            r"\{\{\s*date\s*:\s*YYYY-MM-DD\s*\}\}": lambda: datetime.today().strftime("%Y-%m-%d"),
+            r"\{\{\s*time\s*\}\}": lambda: datetime.today().strftime("%H:%M"),
+        }
+        if title is not None:
+            placeholders[r"\{\{\s*title\s*\}\}"] = lambda: title
+
+        for pattern, value_expression in placeholders.items():
+            value = value_expression()
+            content = re.sub(pattern, lambda _match, value=value: value, content)
+        return content
+
+    def create_from_template(
+            self,
+            template_name: str,
+            new_note_name: str,
+            template_version: float | None = None,
+            path: Path | str = Path("."),
+        ) -> MarkdownNote:
+        """Create a new note from a template.
+
+        The template content is written to ``<vault root>/<path>/<new_note_name>.md``
+        with supported placeholders (``{{title}}``, ``{{time}}``, ``{{date:YYYY-MM-DD}}``;
+        see :meth:`_resolve_placeholders`) resolved,
+        and the new note is registered in the mapped directory it was created in.
+
+        Args:
+            template_name: Name of the template note (without extension).
+            new_note_name: Name of the new note to create (without extension).
+            template_version: Template version to use. When ``None``, the newest
+                available version is used.
+            path: Existing directory for the new note, relative to the vault
+                root. Defaults to the vault root.
+
+        Returns:
+            The newly created :class:`MarkdownNote`.
+
+        Raises:
+            FileNotFoundError: If the templates category directory, the template,
+                the requested template version or the target directory does not exist.
+            FileExistsError: If a note named ``new_note_name`` already exists
+                in the target directory.
+            ValueError: If ``path`` points outside the vault.
+        """
+        vault_root = self.root.path
+        target_dir = Path(os.path.normpath(vault_root / path))
+        if not target_dir.resolve().is_relative_to(vault_root.resolve()):
+            raise ValueError(f"Path '{path}' points outside the vault.")
+
+        templates_dir = self.get_category_dir(CategoryDirectory.TEMPLATES)
+        if template_version is None:
+            template_version = self._get_newest_template_version(template_name)
+            if template_version is None:
+                raise FileNotFoundError(f"No template found for '{template_name}'.")
+
+        template_stem = Path(self._build_template_filename(template_name, template_version)).stem
+        try:
+            template_note = templates_dir[template_stem]
+        except KeyError:
+            raise FileNotFoundError(
+                f"Template '{template_name}' version {template_version} not found."
+            ) from None
+
+        new_note_path = target_dir / f"{new_note_name}.md"
+        if new_note_path.exists():
+            raise FileExistsError(f"Note '{new_note_name}' already exists.")
+
+        content = self._resolve_placeholders(template_note.content, title=new_note_name)
+        # "x" mode fails instead of overwriting if the file appeared in the meantime.
+        with open(new_note_path, "x", encoding="utf-8") as new_note_file:
+            new_note_file.write(content)
+
+        new_markdown_note = self._build_markdown_note(new_note_path)
+        parent = self.root.get_dir(target_dir)
+        if parent is None:
+            # The directory exists on disk but is not mapped yet; map again to pick it up.
+            self.map()
+            parent = self.root.get_dir(target_dir)
+            if parent is not None:
+                new_markdown_note = parent[new_note_name]
+        if parent is not None and new_markdown_note not in parent.notes:
+            parent.notes.append(new_markdown_note)
+        elif parent is None:
+            logger.warning(f"Directory '{target_dir}' is not part of the mapped vault; the new note is not registered.")
+        self.__dict__.pop("statistics", None)
+        logger.info(f"Created new note '{new_note_name}' from template '{template_name}' version {template_version}")
+        return new_markdown_note
