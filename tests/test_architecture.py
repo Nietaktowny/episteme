@@ -1,11 +1,11 @@
 """Guards for the dependency direction between Episteme's parts.
 
-    cli (settings)       <- used by everyone, imports nothing of Episteme
+    settings             <- used by everyone, imports nothing of Episteme
     models/              <- shared vocabulary, imports no system
-    obsidian  -> cli, models.obsidian        (knows nothing about the database)
-    anki      -> cli, models.anki            (knows nothing about the database)
-    database  -> cli, models                 (knows nothing about Obsidian)
-    episteme (package root, __main__)        (the only place that knows several systems)
+    obsidian  -> settings, models.obsidian        (knows nothing about the database)
+    anki      -> settings, models.anki            (knows nothing about the database)
+    database  -> settings, models                 (knows nothing about Obsidian)
+    episteme (package root), cli/, tui/           (the only places that know several systems)
 
 The imports are analysed statically (``ast``), so the rules hold without running
 the code. What cannot be seen: dynamic imports such as the engine registry's
@@ -154,15 +154,19 @@ class ImportGraph:
         return module == prefix or module.startswith(f"{prefix}.")
 
 
+# Interfaces on top of Episteme: they compose the systems, so they may import the package root.
+COMPOSING = ("episteme.cli", "episteme.tui")
+
+
 # Each rule lists what a part may depend on. Anything not listed is forbidden.
 RULES: dict[str, set[str]] = {
-    "episteme.cli": set(),
+    "episteme.settings": set(),
     "episteme.models": {"episteme.models"},
-    "episteme.obsidian": {"episteme.cli", "episteme.models.obsidian", "episteme.obsidian"},
-    "episteme.anki": {"episteme.cli", "episteme.models.anki", "episteme.anki"},
-    "episteme.database": {"episteme.cli", "episteme.models", "episteme.database"},
+    "episteme.obsidian": {"episteme.settings", "episteme.models.obsidian", "episteme.obsidian"},
+    "episteme.anki": {"episteme.settings", "episteme.models.anki", "episteme.anki"},
+    "episteme.database": {"episteme.settings", "episteme.models", "episteme.database"},
 }
-# "episteme" (the package root) and "episteme.__main__" have no rule: they compose the parts.
+# "episteme" (the package root), "episteme.__main__" and "episteme.cli" have no rule: they compose the parts.
 
 
 @pytest.fixture(scope="module")
@@ -172,11 +176,11 @@ def graph() -> ImportGraph:
 
 class TestEpistemeArchitecture:
     def test_the_graph_sees_the_modules(self, graph: ImportGraph):
-        assert {"episteme", "episteme.cli", "episteme.obsidian", "episteme.database.database",
+        assert {"episteme", "episteme.settings", "episteme.obsidian", "episteme.database.database",
                 "episteme.models.obsidian", "episteme.models.database"} <= set(graph.files)
 
     def test_the_graph_sees_real_imports(self, graph: ImportGraph):
-        assert "episteme.cli" in graph.imports["episteme.obsidian"]
+        assert "episteme.settings" in graph.imports["episteme.obsidian"]
         assert "episteme.models.obsidian" in graph.imports["episteme.database.database"]
 
     def test_no_circular_imports(self, graph: ImportGraph):
@@ -204,11 +208,13 @@ class TestEpistemeArchitecture:
             for module in graph.files
             if {"episteme.obsidian", "episteme.database"} <= graph.reachable(module)
         }
-        assert knows_both <= {"episteme", "episteme.__main__"}
+        composing = {m for m in knows_both if not m.startswith(COMPOSING)}
+        assert composing <= {"episteme", "episteme.__main__"}
 
     def test_no_module_imports_the_package_root(self, graph: ImportGraph):
         importers = {module for module, imported in graph.imports.items() if "episteme" in imported}
-        assert importers <= {"episteme.__main__"}
+        outside_cli = {m for m in importers if not m.startswith(COMPOSING)}
+        assert outside_cli <= {"episteme.__main__"}
 
 
 @pytest.fixture

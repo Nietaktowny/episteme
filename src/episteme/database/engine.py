@@ -13,7 +13,7 @@ from importlib.resources.abc import Traversable
 from pathlib import Path
 from typing import Any, ClassVar, Self
 
-from episteme.cli import DatabaseEngineName, DataSettings
+from episteme.settings import DatabaseEngineName, DataSettings
 
 Row = dict[str, Any]
 """A result row: column name to value."""

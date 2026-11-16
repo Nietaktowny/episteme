@@ -6,7 +6,7 @@ from pathlib import Path, PurePosixPath
 
 import pytest
 
-from episteme.cli import DataSettings, ObsidianSettings
+from episteme.settings import DataSettings, ObsidianSettings
 from episteme.database import Database
 from episteme.models.obsidian import MarkdownNote
 from episteme.obsidian import ObsidianVault

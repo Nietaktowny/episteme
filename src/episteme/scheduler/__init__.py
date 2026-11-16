@@ -18,7 +18,7 @@ from apscheduler.schedulers.blocking import BlockingScheduler
 from apscheduler.triggers.cron import CronTrigger
 from apscheduler.schedulers.base import SchedulerAlreadyRunningError
 
-from episteme.cli import SchedulerSettings
+from episteme.settings import ALIASES, SchedulerSettings
 
 logger = logging.getLogger("episteme")
 
@@ -41,6 +41,31 @@ def _enabled(method):
         return method(self, *args, **kwargs)
 
     return guarded
+
+
+_CRON_FIELDS = ("minute", "hour", "day", "month", "day_of_week")
+
+
+def parse_cron(expression: str) -> dict[str, str]:
+    """A cron expression as the fields :meth:`EpistemeScheduler.add_job` takes.
+
+    Args:
+        expression: Five fields (``minute hour day month weekday``) or ``@hourly``, ``@daily``,
+            ``@weekly``, ``@monthly``.
+
+    Raises:
+        ValueError: If it is neither.
+
+    Examples:
+        >>> parse_cron("*/15 8 * * mon-fri")
+        {'minute': '*/15', 'hour': '8', 'day': '*', 'month': '*', 'day_of_week': 'mon-fri'}
+        >>> parse_cron("@weekly")["day_of_week"]
+        '0'
+    """
+    parts = ALIASES.get(expression.strip().lower(), expression).split()
+    if len(parts) != len(_CRON_FIELDS):
+        raise ValueError(f"'{expression}' is not a cron expression: use five fields (minute hour day month weekday) or @hourly, @daily, @weekly, @monthly.")
+    return dict(zip(_CRON_FIELDS, parts))
 
 
 class EpistemeScheduler:
@@ -77,8 +102,8 @@ class EpistemeScheduler:
 
         Args:
             settings: Scheduler settings. When ``None``, the defaults of
-                :class:`~episteme.cli.SchedulerSettings` are used (enabled); the environment is not
-                read, that is done by :class:`~episteme.cli.EpistemeSettings`.
+                :class:`~episteme.settings.SchedulerSettings` are used (enabled); the environment is not
+                read, that is done by :class:`~episteme.settings.EpistemeSettings`.
         """
         self.settings: SchedulerSettings = settings if settings is not None else SchedulerSettings()
         self.scheduler = BlockingScheduler()
@@ -119,6 +144,14 @@ class EpistemeScheduler:
         """
         self.scheduler.shutdown()
         logger.info("Scheduler stopped.")
+
+    def add_cron(self, func, expression: str, **kwargs):
+        """Schedule a function with a cron expression; see :func:`parse_cron` for the forms.
+
+        Raises:
+            ValueError: If the expression is not valid.
+        """
+        return self.add_job(func, **parse_cron(expression), **kwargs)
 
     @_enabled
     def add_job(self, func, **kwargs):

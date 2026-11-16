@@ -36,7 +36,7 @@ from pathlib import Path
 from zoneinfo import ZoneInfo
 
 from episteme.anki.protobuf import Message
-from episteme.cli import AnkiSettings
+from episteme.settings import AnkiSettings
 from episteme.models.anki import (
     AnkiCard,
     AnkiCollectionInfo,

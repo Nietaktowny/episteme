@@ -4,7 +4,7 @@ from pathlib import Path, PurePosixPath
 import duckdb
 import pytest
 
-from episteme.cli import DataSettings, ObsidianSettings
+from episteme.settings import DataSettings, ObsidianSettings
 from episteme.database import Database
 from episteme.models.obsidian import CategoryDirectory, MarkdownNote
 from episteme.models.sync import ObsidianSyncResult

@@ -7,7 +7,7 @@ from pathlib import Path
 
 import pytest
 
-from episteme.cli import DataSettings, ObsidianSettings
+from episteme.settings import DataSettings, ObsidianSettings
 from episteme.database import Database
 from episteme.obsidian import ObsidianVault
 

@@ -419,3 +419,5 @@ FodyWeavers.xsd
 
 # MkDocs build output (rebuilt in CI)
 site/
+episteme.duckdb
+episteme.duckdb.wal

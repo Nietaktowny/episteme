@@ -6,7 +6,7 @@ from pathlib import Path
 import pytest
 
 import test_views_docs as sample
-from episteme.cli import ObsidianSettings
+from episteme.settings import ObsidianSettings
 from episteme.database import Database
 from episteme.obsidian import ObsidianVault
 

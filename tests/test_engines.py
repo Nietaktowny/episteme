@@ -4,7 +4,7 @@ from pathlib import Path
 
 import pytest
 
-from episteme.cli import DatabaseEngineName, DataSettings
+from episteme.settings import DatabaseEngineName, DataSettings
 from episteme.database._duckdb import DuckDBEngine
 from episteme.database.engine import _ENGINES, DatabaseEngine, create_engine
 
@@ -215,7 +215,7 @@ class TestFactory:
             "import sys\n"
             "import episteme.database\n"
             "assert 'duckdb' not in sys.modules, 'driver imported with the package'\n"
-            "from episteme.cli import DataSettings\n"
+            "from episteme.settings import DataSettings\n"
             "engine = episteme.database.create_engine(DataSettings(url=':memory:'))\n"
             "assert 'duckdb' in sys.modules\n"
             "engine.close()\n"

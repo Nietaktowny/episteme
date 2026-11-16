@@ -9,12 +9,13 @@ from collections.abc import Iterable, Iterator
 from pathlib import Path, PurePosixPath
 from typing import Any
 
-from episteme.cli import DataSettings
+from episteme.settings import DataSettings
 from episteme.database.engine import DatabaseEngine, Row, create_engine
 from episteme.database.migrations import Migrations
 from episteme.database.queries import QueryStore
 from episteme.models.anki import AnkiSource
 from episteme.models.database import Snapshot
+from episteme.models.overview import AnkiOverview, DatabaseOverview, ObsidianOverview, Overview
 from episteme.models.obsidian import CategoryDirectory, MarkdownNote, Priority, Task, TaskState
 from episteme.models.sync import AnkiSyncResult, AnkiTableChanges, ObsidianSyncResult
 
@@ -344,6 +345,45 @@ class Database:
             self.engine.execute(self.queries["tasks_clear"])
             return len(self.engine.fetch_all(self.queries["notes_clear"]))
 
+    def clear(self, obsidian: bool = True, anki: bool = True) -> dict[str, int]:
+        """Delete the data of the chosen systems; the schema and its history stay.
+
+        Args:
+            obsidian: Delete the notes and their tasks.
+            anki: Delete the stored Anki statistics (cards, notes, decks, deck options, reviews, collection).
+
+        Returns:
+            How many ``notes``, ``tasks`` and Anki ``cards`` were deleted (a system left alone counts 0).
+        """
+        deleted = {"notes": 0, "tasks": 0, "anki_cards": 0}
+        if obsidian:
+            deleted["tasks"] = self.count_tasks()
+            deleted["notes"] = self.clear_notes()  # its own transaction
+        if anki:
+            with self.engine.transaction():
+                deleted["anki_cards"] = self.engine.fetch_one(self.queries["anki_cards_count"])["count"]
+                self.engine.execute_script(self.queries["anki_clear"])
+        return deleted
+
+    def overview(self) -> Overview:
+        """What the database holds right now: counts of notes, tasks and Anki items, and which database it is.
+
+        Examples:
+            >>> database = Database(DataSettings(url=":memory:"))
+            >>> database.overview().obsidian.notes
+            0
+            >>> database.close()
+        """
+        obsidian = self.engine.fetch_one(self.queries["overview_obsidian"]) or {}
+        types = {row["type"]: row["notes"] for row in self.engine.fetch_all(self.queries["overview_note_types"])}
+        anki = self.engine.fetch_one(self.queries["overview_anki"]) or {}
+        return Overview(
+            database=DatabaseOverview(engine=str(self.settings.engine), url=self.settings.url,
+                                      schema_version=self.schema_version, tables=sorted(self.tables())),
+            obsidian=ObsidianOverview(**dict(obsidian), note_types=types),
+            anki=AnkiOverview(**dict(anki)),
+        )
+
     @staticmethod
     def _note_differs(params: dict[str, Any], row: Row) -> bool:
         """Whether the data that would be stored for a note differs from a stored ``notes`` row.
@@ -488,6 +528,11 @@ class Database:
         key = self._key(note_path) if note_path is not None else None
         for row in self.engine.iterate(self.queries["tasks_select"], {"note_path": key}):
             yield self._task_from_row(row)
+
+    def task_note_path(self, task_id: str) -> str | None:
+        """Path of the note a stored task is in, or ``None`` if no task has this id."""
+        row = self.engine.fetch_one(self.queries["task_note"], {"task_id": task_id})
+        return row["note_path"] if row else None
 
     def count_tasks(self) -> int:
         """Number of stored tasks."""

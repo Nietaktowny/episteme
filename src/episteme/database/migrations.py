@@ -30,7 +30,7 @@ class Migrations:
             ``history_list`` and ``history_insert``.
 
     Examples:
-        >>> from episteme.cli import DataSettings
+        >>> from episteme.settings import DataSettings
         >>> from episteme.database.engine import create_engine
         >>> engine = create_engine(DataSettings(url=":memory:"))
         >>> migrations = Migrations(engine, QueryStore(engine.sql_dir / "queries"))

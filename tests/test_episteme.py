@@ -5,7 +5,7 @@ from pathlib import Path
 import pytest
 
 from episteme import Episteme
-from episteme.cli import DataSettings, EpistemeSettings, ObsidianSettings
+from episteme.settings import DataSettings, EpistemeSettings, ObsidianSettings
 from episteme.obsidian import ObsidianVault
 
 
@@ -111,7 +111,7 @@ class TestAnAnkiOnlySession:
 
 from anki_collection import sample_collection  # noqa: E402
 from episteme.anki import AnkiCollection  # noqa: E402
-from episteme.cli import AnkiSettings  # noqa: E402
+from episteme.settings import AnkiSettings  # noqa: E402
 
 
 def settings_with_anki(vault_root: Path, collection: Path | None, timezone: str = "Europe/Warsaw") -> EpistemeSettings:

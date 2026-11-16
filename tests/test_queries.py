@@ -71,6 +71,7 @@ class TestBundledSql:
         "history_create", "history_list", "history_insert", "tables", "views", "indexes",
         "note_upsert", "note_get", "note_exists", "notes_select", "notes_count",
         "notes_delete", "notes_clear", "snapshot_notes",
+        "overview_obsidian", "overview_note_types", "overview_anki", "anki_clear", "anki_cards_count", "task_note",
         "task_upsert", "tasks_select", "tasks_count", "tasks_delete", "tasks_delete_by_note", "tasks_clear",
         "anki_collection_upsert", "anki_decks_select", "anki_decks_upsert", "anki_decks_delete",
         "anki_deck_options_select", "anki_deck_options_upsert", "anki_deck_options_delete",

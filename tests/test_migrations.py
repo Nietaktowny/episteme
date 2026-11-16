@@ -3,7 +3,7 @@ from pathlib import Path
 
 import pytest
 
-from episteme.cli import DataSettings
+from episteme.settings import DataSettings
 from episteme.database import Database, MigrationError, Migrations, QueryStore
 from episteme.database._duckdb import DuckDBEngine
 from episteme.database.engine import _ENGINES, create_engine

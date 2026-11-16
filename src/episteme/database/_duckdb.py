@@ -9,7 +9,7 @@ from typing import Self
 
 import duckdb
 
-from episteme.cli import DataSettings
+from episteme.settings import DataSettings
 from episteme.database.engine import DatabaseEngine, Params, Row
 
 _URL_PREFIX = "duckdb:///"

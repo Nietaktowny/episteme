@@ -9,7 +9,7 @@ from pydantic import ValidationError
 from rich.table import Table
 
 from episteme import Episteme
-from episteme.cli import DataSettings, EpistemeSettings, ObsidianSettings
+from episteme.settings import DataSettings, EpistemeSettings, ObsidianSettings
 from episteme.models.obsidian import (
     CategoryDirectory,
     MarkdownNote,

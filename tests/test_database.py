@@ -4,7 +4,7 @@ import duckdb
 import pytest
 from pydantic import ValidationError
 
-from episteme.cli import DatabaseEngineName, DataSettings, EpistemeSettings
+from episteme.settings import DatabaseEngineName, DataSettings, EpistemeSettings
 from episteme.database import Database, DatabaseEngine, MigrationError, QueryStore
 from episteme.database._duckdb import DuckDBEngine
 from episteme.models.obsidian import MarkdownNote

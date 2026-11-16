@@ -13,11 +13,12 @@ from datetime import datetime
 import time
 from functools import cached_property
 import re
+import unicodedata
 
 from rich.table import Table
 from rich import print
 
-from episteme.cli import EpistemeSettings, ObsidianSettings
+from episteme.settings import EpistemeSettings, ObsidianSettings
 from episteme.models.obsidian import (
     VaultDirectory,
     CategoryDirectory,
@@ -44,7 +45,7 @@ class ObsidianVault:
 
     Examples:
         >>> import tempfile
-        >>> from episteme.cli import ObsidianSettings
+        >>> from episteme.settings import ObsidianSettings
         >>> with tempfile.TemporaryDirectory() as tmp:
         ...     root = Path(tmp)
         ...     (root / "10_Projects").mkdir()
@@ -67,7 +68,7 @@ class ObsidianVault:
 
         Examples:
             >>> import tempfile
-            >>> from episteme.cli import ObsidianSettings
+            >>> from episteme.settings import ObsidianSettings
             >>> with tempfile.TemporaryDirectory() as tmp:
             ...     settings = ObsidianSettings(vault_root=tmp)
             ...     vault = ObsidianVault(settings)
@@ -88,7 +89,7 @@ class ObsidianVault:
 
         Examples:
             >>> import tempfile
-            >>> from episteme.cli import ObsidianSettings
+            >>> from episteme.settings import ObsidianSettings
             >>> with tempfile.TemporaryDirectory() as tmp:
             ...     _ = (Path(tmp) / "a.md").write_text("A")
             ...     vault = ObsidianVault(ObsidianSettings(vault_root=tmp))
@@ -124,7 +125,7 @@ class ObsidianVault:
 
         Examples:
             >>> import tempfile
-            >>> from episteme.cli import ObsidianSettings
+            >>> from episteme.settings import ObsidianSettings
             >>> with tempfile.TemporaryDirectory() as tmp:
             ...     root = Path(tmp)
             ...     (root / "10_Projects").mkdir()
@@ -149,7 +150,7 @@ class ObsidianVault:
 
         Examples:
             >>> import tempfile
-            >>> from episteme.cli import ObsidianSettings
+            >>> from episteme.settings import ObsidianSettings
             >>> with tempfile.TemporaryDirectory() as tmp:
             ...     vault = ObsidianVault(ObsidianSettings(vault_root=tmp))
             ...     table = vault.__rich__()
@@ -178,7 +179,7 @@ class ObsidianVault:
 
         Examples:
             >>> import tempfile
-            >>> from episteme.cli import ObsidianSettings
+            >>> from episteme.settings import ObsidianSettings
             >>> with tempfile.TemporaryDirectory() as tmp:
             ...     vault = ObsidianVault(ObsidianSettings(vault_root=tmp))
             ...     lines = str(vault).splitlines()
@@ -208,7 +209,7 @@ class ObsidianVault:
 
         Examples:
             >>> import tempfile
-            >>> from episteme.cli import ObsidianSettings
+            >>> from episteme.settings import ObsidianSettings
             >>> with tempfile.TemporaryDirectory() as tmp:
             ...     vault1 = ObsidianVault(ObsidianSettings(vault_root=tmp))
             ...     vault2 = ObsidianVault(ObsidianSettings(vault_root=tmp))
@@ -235,7 +236,7 @@ class ObsidianVault:
 
         Examples:
             >>> import tempfile
-            >>> from episteme.cli import ObsidianSettings
+            >>> from episteme.settings import ObsidianSettings
             >>> with tempfile.TemporaryDirectory() as tmp:
             ...     root = Path(tmp)
             ...     (root / "10_Projects").mkdir()
@@ -254,7 +255,7 @@ class ObsidianVault:
 
         Examples:
             >>> import tempfile
-            >>> from episteme.cli import ObsidianSettings
+            >>> from episteme.settings import ObsidianSettings
             >>> with tempfile.TemporaryDirectory() as tmp:
             ...     root = Path(tmp)
             ...     (root / "10_Projects").mkdir()
@@ -292,7 +293,7 @@ class ObsidianVault:
 
         Examples:
             >>> import tempfile
-            >>> from episteme.cli import ObsidianSettings
+            >>> from episteme.settings import ObsidianSettings
             >>> with tempfile.TemporaryDirectory() as tmp:
             ...     root = Path(tmp)
             ...     _ = (root / "a.md").write_text("A")
@@ -332,7 +333,7 @@ class ObsidianVault:
 
         Examples:
             >>> import tempfile
-            >>> from episteme.cli import ObsidianSettings
+            >>> from episteme.settings import ObsidianSettings
             >>> with tempfile.TemporaryDirectory() as tmp:
             ...     root = Path(tmp)
             ...     (root / "30_Resources").mkdir()
@@ -371,7 +372,7 @@ class ObsidianVault:
 
         Examples:
             >>> import tempfile
-            >>> from episteme.cli import ObsidianSettings
+            >>> from episteme.settings import ObsidianSettings
             >>> with tempfile.TemporaryDirectory() as tmp:
             ...     root = Path(tmp)
             ...     (root / "10_Projects" / "sub").mkdir(parents=True)
@@ -412,7 +413,7 @@ class ObsidianVault:
 
         Examples:
             >>> import tempfile
-            >>> from episteme.cli import ObsidianSettings
+            >>> from episteme.settings import ObsidianSettings
             >>> with tempfile.TemporaryDirectory() as tmp:
             ...     root = Path(tmp)
             ...     vault = ObsidianVault(ObsidianSettings(vault_root=root))
@@ -443,7 +444,7 @@ class ObsidianVault:
 
         Examples:
             >>> import tempfile
-            >>> from episteme.cli import ObsidianSettings
+            >>> from episteme.settings import ObsidianSettings
             >>> with tempfile.TemporaryDirectory() as tmp:
             ...     root = Path(tmp)
             ...     (root / ".obsidian").mkdir()
@@ -490,7 +491,7 @@ class ObsidianVault:
 
         Examples:
             >>> import tempfile
-            >>> from episteme.cli import ObsidianSettings
+            >>> from episteme.settings import ObsidianSettings
             >>> with tempfile.TemporaryDirectory() as tmp:
             ...     root = Path(tmp)
             ...     (root / "sub").mkdir()
@@ -535,7 +536,7 @@ class ObsidianVault:
 
         Examples:
             >>> import tempfile
-            >>> from episteme.cli import ObsidianSettings
+            >>> from episteme.settings import ObsidianSettings
             >>> with tempfile.TemporaryDirectory() as tmp:
             ...     root = Path(tmp)
             ...     (root / "10_Projects").mkdir()
@@ -582,6 +583,47 @@ class ObsidianVault:
         note.absolute_path = self.settings.vault_root / note.path
         return note
 
+    def find_note(self, reference: Path | str) -> MarkdownNote:
+        """Find a note by its vault-relative path or by its name, ready to read and edit.
+
+        A path (``10_Notes/Idea`` or ``10_Notes/Idea.md``) is looked up directly, without mapping the
+        vault. Anything else is a note name, searched for in the mapped vault.
+
+        Args:
+            reference: Path relative to the vault root (``.md`` optional), or a note name.
+
+        Returns:
+            The note, attached to this vault.
+
+        Raises:
+            FileNotFoundError: If there is no such note.
+            ValueError: If the path leaves the vault, or the name is shared by several notes (they are listed).
+
+        Examples:
+            >>> import tempfile
+            >>> from episteme.settings import ObsidianSettings
+            >>> with tempfile.TemporaryDirectory() as tmp:
+            ...     root = Path(tmp)
+            ...     (root / "sub").mkdir()
+            ...     _ = (root / "sub" / "a.md").write_text("Hello")
+            ...     vault = ObsidianVault(ObsidianSettings(vault_root=root))
+            ...     vault.find_note("sub/a").content, vault.find_note("a").path.as_posix()
+            ('Hello', 'sub/a.md')
+        """
+        text = str(reference).replace("\\", "/").strip()
+        relative = PurePosixPath(text if text.endswith(".md") else f"{text}.md")
+        if relative.is_absolute() or ".." in relative.parts:
+            raise ValueError(f"'{reference}' must be a path inside the vault.")
+        if (self.settings.vault_root / relative).is_file():
+            return self.attach(MarkdownNote(name=relative.stem, path=relative))
+        name = unicodedata.normalize("NFC", relative.stem)
+        matches = [note for note in self.root.iter_notes() if note.name == name]
+        if not matches:
+            raise FileNotFoundError(f"No note '{reference}' in the vault.")
+        if len(matches) > 1:
+            raise ValueError(f"'{reference}' is ambiguous, use a path: " + ", ".join(sorted(note.path.as_posix() for note in matches)))
+        return self.attach(matches[0])
+
     def _get_newest_template_version(self, template_name: str) -> float | None:
         """Get the newest version of a template note.
 
@@ -613,7 +655,7 @@ class ObsidianVault:
 
         Examples:
             >>> import tempfile
-            >>> from episteme.cli import ObsidianSettings
+            >>> from episteme.settings import ObsidianSettings
             >>> with tempfile.TemporaryDirectory() as tmp:
             ...     root = Path(tmp)
             ...     (root / "99_Templates").mkdir()
@@ -641,7 +683,7 @@ class ObsidianVault:
 
         Examples:
             >>> import tempfile
-            >>> from episteme.cli import ObsidianSettings
+            >>> from episteme.settings import ObsidianSettings
             >>> with tempfile.TemporaryDirectory() as tmp:
             ...     root = Path(tmp)
             ...     (root / "99_Templates").mkdir()
@@ -689,7 +731,7 @@ class ObsidianVault:
 
         Examples:
             >>> import tempfile
-            >>> from episteme.cli import ObsidianSettings
+            >>> from episteme.settings import ObsidianSettings
             >>> with tempfile.TemporaryDirectory() as tmp:
             ...     vault = ObsidianVault(ObsidianSettings(vault_root=tmp))
             ...     vault._resolve_placeholders("# {{title}}", title="Idea")

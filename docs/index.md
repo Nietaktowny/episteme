@@ -4,7 +4,7 @@ Episteme is supposed to be my data collection and management system for my PKM a
 
 ```python
 from episteme import Episteme
-from episteme.cli import EpistemeSettings, ObsidianSettings
+from episteme.settings import EpistemeSettings, ObsidianSettings
 
 settings = EpistemeSettings(obsidian=ObsidianSettings(vault_root="~/vault"))
 episteme = Episteme(settings)

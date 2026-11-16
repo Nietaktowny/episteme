@@ -9,7 +9,7 @@ import pytest
 from rich.console import Console
 
 from episteme import Episteme
-from episteme.cli import DataSettings, EpistemeSettings, ObsidianSettings
+from episteme.settings import DataSettings, EpistemeSettings, ObsidianSettings
 from episteme.database import Database
 from episteme.models.obsidian import MarkdownNote, Priority, Task, TaskState
 from episteme.models.sync import ObsidianSyncResult

@@ -8,7 +8,7 @@ import pytest
 
 from anki_collection import WARSAW, CollectionBuilder, sample_collection
 from episteme.anki import AnkiSnapshot
-from episteme.cli import DataSettings
+from episteme.settings import DataSettings
 from episteme.database import Database
 
 CREATED = date(2021, 10, 19)

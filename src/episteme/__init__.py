@@ -8,23 +8,26 @@ systems, each living in its own module:
 * Scheduler - :class:`episteme.scheduler.EpistemeScheduler`, which runs recurring jobs such as syncing
 
 Data models are defined in :mod:`episteme.models`, storage lives in
-:mod:`episteme.database` and configuration in :mod:`episteme.cli`.
+:mod:`episteme.database` and configuration in :mod:`episteme.settings`, the command line in :mod:`episteme.cli`.
 """
 import logging
 import re
 import time
+from collections.abc import Callable
 from datetime import date, datetime
 
 from rich import print
 
 from episteme.anki import AnkiCollection
-from episteme.cli import EpistemeSettings
+from episteme.settings import EpistemeSettings
 from episteme.database import Database
 from episteme.obsidian import ObsidianVault
 from episteme.scheduler import EpistemeScheduler
 
 from episteme.models.database import Snapshot
 from episteme.models.errors import ErrorInfo
+from episteme.models.obsidian import MarkdownNote, Task
+from episteme.models.overview import Overview
 from episteme.models.sync import AnkiSyncResult, ObsidianSyncResult, SyncResult
 
 logger = logging.getLogger("episteme")
@@ -46,7 +49,7 @@ class Episteme:
 
     Examples:
         >>> import tempfile
-        >>> from episteme.cli import DataSettings, ObsidianSettings
+        >>> from episteme.settings import DataSettings, ObsidianSettings
         >>> with tempfile.TemporaryDirectory() as tmp:
         ...     settings = EpistemeSettings(
         ...         obsidian=ObsidianSettings(vault_root=tmp),
@@ -91,7 +94,7 @@ class Episteme:
         Examples:
             >>> import tempfile
             >>> from pathlib import Path
-            >>> from episteme.cli import DataSettings, ObsidianSettings
+            >>> from episteme.settings import DataSettings, ObsidianSettings
             >>> with tempfile.TemporaryDirectory() as tmp:
             ...     _ = (Path(tmp) / "a.md").write_text("A")
             ...     episteme = Episteme(EpistemeSettings(
@@ -119,7 +122,7 @@ class Episteme:
             What changed in each table, with the time the copy and the database work took.
 
         Raises:
-            AnkiCollectionNotFoundError: If the collection cannot be found (see :class:`~episteme.cli.AnkiSettings`).
+            AnkiCollectionNotFoundError: If the collection cannot be found (see :class:`~episteme.settings.AnkiSettings`).
             UnsupportedAnkiSchemaError: If the collection is older than Anki 2.1.50 wrote.
             Exception: Whatever else fails while reading or syncing; nothing is changed in the database in that
                 case. :meth:`sync` reports such failures as data instead.
@@ -127,7 +130,7 @@ class Episteme:
         Examples:
             >>> import sqlite3, tempfile
             >>> from pathlib import Path
-            >>> from episteme.cli import AnkiSettings, DataSettings
+            >>> from episteme.settings import AnkiSettings, DataSettings
             >>> with tempfile.TemporaryDirectory() as tmp:
             ...     episteme = Episteme(EpistemeSettings(
             ...         anki=AnkiSettings(collection_path=Path(tmp) / "missing.anki2"),
@@ -168,7 +171,7 @@ class Episteme:
         Examples:
             >>> import tempfile
             >>> from pathlib import Path
-            >>> from episteme.cli import DataSettings, ObsidianSettings
+            >>> from episteme.settings import DataSettings, ObsidianSettings
             >>> with tempfile.TemporaryDirectory() as tmp:
             ...     _ = (Path(tmp) / "a.md").write_text("A")
             ...     episteme = Episteme(EpistemeSettings(
@@ -202,7 +205,7 @@ class Episteme:
         Examples:
             >>> import tempfile
             >>> from pathlib import Path
-            >>> from episteme.cli import DataSettings, ObsidianSettings
+            >>> from episteme.settings import DataSettings, ObsidianSettings
             >>> with tempfile.TemporaryDirectory() as tmp:
             ...     _ = (Path(tmp) / "a.md").write_text("A")
             ...     episteme = Episteme(EpistemeSettings(
@@ -235,3 +238,72 @@ class Episteme:
             obsidian=obsidian,
             anki=anki,
         )
+
+    def overview(self) -> Overview:
+        """What the database holds: counts per system, as of the last sync. See :meth:`sync`."""
+        return self.data.overview()
+
+    def read_note(self, reference: str) -> MarkdownNote:
+        """A note by vault-relative path or name, with its content readable (``note.content``).
+
+        Raises:
+            FileNotFoundError: If there is no such note.
+            ValueError: If the reference leaves the vault, or a name is shared by several notes.
+        """
+        return self.obsidian.find_note(reference)
+
+    def find_task(self, task_id: str) -> tuple[MarkdownNote, Task]:
+        """A task by id, read fresh from its note, with the note.
+
+        The database says which note holds the task (so run :meth:`sync` after adding tasks by hand);
+        the task itself is read from the file, so it is up to date and can be updated or deleted.
+
+        Raises:
+            LookupError: If the database has no task with this id, or the note no longer has it.
+        """
+        path = self.data.task_note_path(task_id)
+        if path is None:
+            raise LookupError(f"No task with id '{task_id}' in the database. Sync, or check the id.")
+        note = self.obsidian.find_note(path)
+        for task in self.obsidian.tasks.get_tasks_from_note(note):
+            if task.id == task_id:
+                return note, task
+        raise LookupError(f"Task '{task_id}' is no longer in '{path}'. Sync to refresh the database.")
+
+    def add_task(self, note: str, content: str, edit: Callable[[Task], object] | None = None) -> Task:
+        """Append a task to a note (its line is written to the file; the database learns of it at the next sync).
+
+        Args:
+            note: Vault-relative path or name of the note.
+            content: Text of the task.
+            edit: Called with the new task before it is written, to set its dates, priority and so on.
+
+        Raises:
+            FileNotFoundError: If there is no such note.
+        """
+        target = self.obsidian.find_note(note)
+        task = Task(note_path=target.path, content=content)
+        if edit is not None:
+            edit(task)
+        return self.obsidian.tasks.create_task(target, task)
+
+    def edit_task(self, task_id: str, edit: Callable[[Task], object]) -> Task:
+        """Change a task in its note: ``edit`` receives the task and modifies it (``task.complete()``, ...).
+
+        Raises:
+            LookupError: If the task cannot be found (see :meth:`find_task`).
+            StaleTaskError: If its note was edited since it was read.
+        """
+        note, task = self.find_task(task_id)
+        edit(task)
+        return self.obsidian.tasks.update_task(note, task)
+
+    def delete_task(self, task_id: str) -> Task:
+        """Remove a task's line from its note. Returns the task that was removed.
+
+        Raises:
+            LookupError: If the task cannot be found (see :meth:`find_task`).
+        """
+        note, task = self.find_task(task_id)
+        self.obsidian.tasks.delete_task(note, task)
+        return task

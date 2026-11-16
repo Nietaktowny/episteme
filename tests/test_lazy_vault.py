@@ -5,7 +5,7 @@ from pathlib import Path
 
 import pytest
 
-from episteme.cli import ObsidianSettings
+from episteme.settings import ObsidianSettings
 from episteme.models.obsidian import CategoryDirectory, MarkdownNote
 from episteme.obsidian import ObsidianVault
 

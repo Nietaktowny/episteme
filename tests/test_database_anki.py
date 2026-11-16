@@ -8,7 +8,7 @@ import pytest
 
 from anki_collection import SECRET, WARSAW, CollectionBuilder, local_ms, sample_collection
 from episteme.anki import AnkiSnapshot
-from episteme.cli import DataSettings
+from episteme.settings import DataSettings
 from episteme.database import Database
 from episteme.models.anki import AnkiReview
 

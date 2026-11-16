@@ -9,7 +9,7 @@ import pytest
 from pydantic import ValidationError
 
 from episteme import Episteme
-from episteme.cli import DataSettings, EpistemeSettings, ObsidianSettings
+from episteme.settings import DataSettings, EpistemeSettings, ObsidianSettings
 from episteme.database import Database
 from episteme.models.database import Snapshot
 from episteme.obsidian import ObsidianVault

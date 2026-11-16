@@ -5,7 +5,8 @@ values use ``__`` as delimiter, e.g. ``OBSIDIAN__VAULT_ROOT``) or through a
 ``.env`` file.
 """
 
-from enum import StrEnum
+import json
+from enum import Enum, StrEnum
 from pathlib import Path
 from zoneinfo import ZoneInfo, ZoneInfoNotFoundError
 
@@ -138,22 +139,59 @@ class DataSettings(BaseModel):
     engine: DatabaseEngineName = Field(DatabaseEngineName.DUCKDB, description="Database engine to use")
     url: str = Field("episteme.duckdb", description="Connection URL of the database, or a file path for file-based engines")
 
+ALIASES = {"@hourly": "0 * * * *", "@daily": "0 0 * * *", "@weekly": "0 0 * * 0", "@monthly": "0 0 1 * *"}
+"""Names for common cron expressions."""
+
+
 class SchedulerSettings(BaseModel):
     """Settings of the scheduler that runs recurring jobs, such as syncing the vault.
+
+    Each job has its own schedule, as a cron expression of five fields (``minute hour day month weekday``)
+    or ``@hourly``, ``@daily``, ``@weekly``, ``@monthly``. A job without a schedule does not run, so
+    syncing daily and taking snapshots weekly are two settings.
 
     Attributes:
         enabled: Whether the scheduler does anything. When it is ``False``, starting the scheduler,
             adding jobs and shutting it down are all ignored, so a program can keep its scheduling
             code and simply switch it off (``SCHEDULER__ENABLED=false``).
+        sync_cron: When to sync every system into the database (``SCHEDULER__SYNC_CRON``).
+        sync_obsidian_cron: When to sync only the Obsidian vault (``SCHEDULER__SYNC_OBSIDIAN_CRON``).
+        sync_anki_cron: When to sync only Anki (``SCHEDULER__SYNC_ANKI_CRON``).
+        snapshot_cron: When to take a snapshot of the vault's notes (``SCHEDULER__SNAPSHOT_CRON``).
 
     Examples:
         >>> SchedulerSettings().enabled
         True
         >>> SchedulerSettings(enabled=False).enabled
         False
+        >>> SchedulerSettings(sync_cron="0 6 * * *", snapshot_cron="@weekly").snapshot_cron
+        '@weekly'
+        >>> SchedulerSettings(sync_obsidian_cron="*/30 * * * *", sync_anki_cron="@daily").sync_anki_cron
+        '@daily'
+        >>> SchedulerSettings(sync_cron="every day")
+        Traceback (most recent call last):
+        ...
+        pydantic_core._pydantic_core.ValidationError: 1 validation error for SchedulerSettings
+        sync_cron
+          Value error, 'every day' is not a cron expression: use five fields (minute hour day month weekday) or @hourly, @daily, @weekly, @monthly. [type=value_error, input_value='every day', input_type=str]
+            For further information visit https://errors.pydantic.dev/2.14/v/value_error
     """
 
     enabled: bool = Field(True, description="Whether the scheduler is enabled")
+    sync_cron: str | None = Field(None, description="Cron expression of the sync job, e.g. '0 6 * * *' or '@daily' (no schedule: the job does not run)")
+    sync_obsidian_cron: str | None = Field(None, description="Cron expression of the job that syncs only Obsidian, e.g. '*/30 * * * *' (no schedule: the job does not run)")
+    sync_anki_cron: str | None = Field(None, description="Cron expression of the job that syncs only Anki, e.g. '0 */6 * * *' (no schedule: the job does not run)")
+    snapshot_cron: str | None = Field(None, description="Cron expression of the snapshot job, e.g. '0 22 * * 0' or '@weekly' (no schedule: the job does not run)")
+
+    @field_validator("sync_cron", "sync_obsidian_cron", "sync_anki_cron", "snapshot_cron")
+    @classmethod
+    def _is_cron(cls, expression: str | None) -> str | None:
+        if expression is None or not expression.strip():
+            return None
+        parts = expression.split()
+        if not (len(parts) == 5 or (len(parts) == 1 and parts[0].lower() in ALIASES)):
+            raise ValueError(f"'{expression}' is not a cron expression: use five fields (minute hour day month weekday) or @hourly, @daily, @weekly, @monthly.")
+        return expression.strip()
 
 class EpistemeSettings(BaseSettings):
     """Top-level Episteme settings.
@@ -193,3 +231,46 @@ class EpistemeSettings(BaseSettings):
     anki: AnkiSettings = Field(default_factory=AnkiSettings, description="Anki collection settings")
     data: DataSettings = Field(default_factory=DataSettings, description="Database settings")
     scheduler: SchedulerSettings = Field(default_factory=SchedulerSettings, description="Scheduler settings")
+
+def example_env(settings: type[BaseSettings] = EpistemeSettings) -> str:
+    """The text of an example ``.env`` file with every setting at its default.
+
+    It is built from the settings models, so a new setting or a new section appears in it without
+    touching this function. Settings that have no default value (``None``) are written commented out.
+
+    Args:
+        settings: The settings class to describe.
+
+    Examples:
+        >>> text = example_env()
+        >>> "OBSIDIAN__SKIP_DIRS=" in text and "# ANKI__COLLECTION_PATH=" in text
+        True
+        >>> "SCHEDULER__ENABLED=true" in text and "DATA__ENGINE=duckdb" in text
+        True
+    """
+    lines = [
+        "# Episteme settings. Copy to .env (or .env.<name> and pass `episteme --env <name>`).",
+        "# Nested settings use '__' between the section and the setting.",
+    ]
+    for section, field in settings.model_fields.items():
+        model = field.annotation
+        if not (isinstance(model, type) and issubclass(model, BaseModel)):
+            continue
+        lines += ["", f"# --- {section} " + "-" * (60 - len(section))]
+        for name, sub in model.model_fields.items():
+            default = sub.get_default(call_default_factory=True)
+            if isinstance(default, Enum):
+                default = default.value
+            if default is None:
+                value = ""
+            elif isinstance(default, bool):
+                value = str(default).lower()
+            elif isinstance(default, (list, dict)):
+                value = json.dumps(default)
+            else:
+                value = str(default)
+            key = f"{section.upper()}__{name.upper()}"
+            if sub.description:
+                lines.append(f"# {sub.description}")
+            lines.append(f"{'# ' if default is None else ''}{key}={value}")
+    return "\n".join(lines) + "\n"

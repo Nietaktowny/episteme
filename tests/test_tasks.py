@@ -5,7 +5,7 @@ from pathlib import Path, PurePosixPath
 import pytest
 from rich.console import Console
 
-from episteme.cli import ObsidianSettings
+from episteme.settings import ObsidianSettings
 from episteme.models.obsidian import MarkdownNote, Priority, Task, TaskState
 from episteme.obsidian import ObsidianVault
 from episteme.obsidian.tasks import ObsidianTasksManager, StaleTaskError

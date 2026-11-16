@@ -7,7 +7,7 @@ import pytest
 
 from anki_collection import WARSAW, sample_collection
 from episteme.anki import AnkiSnapshot
-from episteme.cli import DataSettings
+from episteme.settings import DataSettings
 from episteme.database import Database
 from test_views_docs import as_markdown, table
 
@@ -70,7 +70,7 @@ def test_every_table_is_listed_on_the_page(database: Database):
 
 
 def test_the_settings_the_page_names_exist():
-    from episteme.cli import AnkiSettings
+    from episteme.settings import AnkiSettings
 
     for name in re.findall(r"^ANKI__(\w+)=", TEXT, flags=re.M):
         assert name.lower() in AnkiSettings.model_fields, name

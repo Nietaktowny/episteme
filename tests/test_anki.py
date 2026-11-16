@@ -20,7 +20,7 @@ from episteme.anki import (
     anki_data_dirs,
     locate_collection,
 )
-from episteme.cli import AnkiSettings, EpistemeSettings
+from episteme.settings import AnkiSettings, EpistemeSettings
 from episteme.models.anki import CardState, ReviewKind
 
 CREATED = date(2021, 10, 19)
@@ -384,7 +384,7 @@ class TestContentIsNeverRead:
 
         monkeypatch.setattr(AnkiSnapshot, "note_contents", forbidden)
         from episteme.database import Database
-        from episteme.cli import DataSettings
+        from episteme.settings import DataSettings
 
         with Database(DataSettings(url=":memory:")) as database:
             assert database.sync_anki(snapshot).ok
@@ -533,7 +533,7 @@ class TestReadingContentOnDemand:
 
     def test_nothing_is_stored_in_the_database(self, anki: AnkiCollection):
         from episteme import Episteme
-        from episteme.cli import DataSettings, EpistemeSettings
+        from episteme.settings import DataSettings, EpistemeSettings
 
         episteme = Episteme(EpistemeSettings(anki=anki.settings, data=DataSettings(url=":memory:")))
         episteme.sync_anki()

@@ -1,3 +1,0 @@
-# episteme.cli
-
-::: episteme.cli
