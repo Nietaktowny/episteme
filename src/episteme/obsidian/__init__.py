@@ -22,8 +22,10 @@ from episteme.models.obsidian import (
     VaultDirectory,
     CategoryDirectory,
     MarkdownNote,
-    ObsidianStatistics
+    ObsidianStatistics,
+    Task
 )
+from episteme.obsidian.tasks import ObsidianTasksManager
 
 logger = logging.getLogger("episteme")
 
@@ -78,6 +80,7 @@ class ObsidianVault:
         self._root: VaultDirectory | None = None
         self.mapped_at: datetime | None = None
         self.__mapping_duration: float | None = None
+        self.tasks = ObsidianTasksManager()
 
     @property
     def is_mapped(self) -> bool:
@@ -719,3 +722,24 @@ class ObsidianVault:
         self.__dict__.pop("statistics", None)
         logger.info(f"Created new note '{new_note_name}' from template '{template_name}' version {template_version}")
         return new_markdown_note
+
+    def scan_for_tasks(self, summary: bool = False, require_id: bool | None = None) -> list[Task]:
+        """Find the tasks of every note of the vault.
+
+        A note that cannot be read is logged and skipped (see
+        :meth:`ObsidianTasksManager.get_tasks_from_note`).
+
+        Args:
+            summary: Print a table of the tasks per note and state.
+            require_id: Return only tasks with an id written in their note (a checkbox without one is not a
+                task in this PKM). ``None`` uses the setting of ``vault.tasks`` (``True`` by default);
+                ``False`` returns every checkbox.
+
+        Returns:
+            All tasks of the vault, note by note.
+        """
+        tasks = self.tasks.get_tasks(self, require_id)
+        logger.info(f"Found {len(tasks)} tasks in vault.")
+        if summary:
+            print(self.tasks.summary_table(tasks))
+        return tasks

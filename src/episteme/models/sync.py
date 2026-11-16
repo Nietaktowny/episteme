@@ -28,6 +28,11 @@ class ObsidianSyncResult(BaseModel):
             frontmatter) differs from the vault.
         unchanged: Notes that were in the database and are identical to the vault.
         removed: Notes deleted because they are no longer in the vault.
+        tasks_added: Tasks that were not in the database before (``0`` when tasks were not synced).
+        tasks_updated: Tasks whose data or place differs from the database.
+        tasks_unchanged: Tasks identical to the database.
+        tasks_removed: Tasks deleted because they are no longer in the vault.
+        duplicate_task_ids: Ids found on more than one task; only the first of each is stored.
         mapping_seconds: Time spent mapping the vault.
         database_seconds: Time spent writing to the database.
         error: Why the sync failed, or ``None`` if it succeeded.
@@ -49,6 +54,13 @@ class ObsidianSyncResult(BaseModel):
     removed: int = Field(..., ge=0, description="Notes deleted because they are no longer in the vault")
     mapping_seconds: float = Field(0.0, ge=0, description="Time spent mapping the vault")
     database_seconds: float = Field(0.0, ge=0, description="Time spent writing to the database")
+    tasks_added: int = Field(0, ge=0, description="Tasks that were not in the database before")
+    tasks_updated: int = Field(0, ge=0, description="Tasks whose data (or place in the vault) differs from what the database had")
+    tasks_unchanged: int = Field(0, ge=0, description="Tasks identical to what the database had")
+    tasks_removed: int = Field(0, ge=0, description="Tasks deleted because they are no longer in the vault")
+    duplicate_task_ids: list[str] = Field(
+        default_factory=list, description="Ids that are on more than one task; only the first of each was stored",
+    )
     error: ErrorInfo | None = Field(None, description="Why the sync failed, or None if it succeeded")
 
     @classmethod
@@ -70,6 +82,11 @@ class ObsidianSyncResult(BaseModel):
     @property
     def total(self) -> int:
         return self.added + self.updated + self.unchanged
+
+    @computed_field(description="Tasks stored after the sync")
+    @property
+    def tasks_total(self) -> int:
+        return self.tasks_added + self.tasks_updated + self.tasks_unchanged
 
     @computed_field(description="Time the whole sync took")
     @property
@@ -95,6 +112,13 @@ class ObsidianSyncResult(BaseModel):
             grid.add_row("unchanged", f"[dim]{self.unchanged}[/]")
             grid.add_row("removed", f"[red]{self.removed}[/]")
             grid.add_row("total", f"[bold]{self.total}[/]")
+            if self.tasks_total or self.tasks_removed:
+                grid.add_row("tasks added", f"[green]{self.tasks_added}[/]")
+                grid.add_row("tasks updated", f"[yellow]{self.tasks_updated}[/]")
+                grid.add_row("tasks unchanged", f"[dim]{self.tasks_unchanged}[/]")
+                grid.add_row("tasks removed", f"[red]{self.tasks_removed}[/]")
+            if self.duplicate_task_ids:
+                grid.add_row("duplicate ids", f"[red]{', '.join(self.duplicate_task_ids)}[/]")
             grid.add_row("mapping", f"{self.mapping_seconds:.2f} s")
             grid.add_row("database", f"{self.database_seconds:.2f} s")
             parts = [grid]

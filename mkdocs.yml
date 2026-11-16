@@ -43,9 +43,11 @@ nav:
   - Home: index.md
   - Database views: views.md
   - Snapshots: snapshots.md
+  - Tasks: tasks.md
   - API reference:
       - episteme: reference/episteme.md
       - episteme.obsidian: reference/obsidian.md
+      - episteme.obsidian.tasks: reference/obsidian_tasks.md
       - episteme.cli: reference/cli.md
       - episteme.scheduler: reference/scheduler.md
       - episteme.database: reference/database.md

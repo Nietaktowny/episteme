@@ -17,7 +17,7 @@ snapshot.path, snapshot.notes                # the file, and how many notes it h
 ```
 
 `Episteme.snapshot` syncs the vault into the database first, so the snapshot shows the vault as it is now,
-and writes `<vault>/_system/snapshots/notes_<label>.parquet`. The folder is the `snapshots_dir`
+and writes `<vault>/_system/episteme/snapshots/notes_<label>.parquet`. The folder is the `snapshots_dir`
 setting of the vault (`OBSIDIAN__SNAPSHOTS_DIR`), relative to the vault root.
 
 A snapshot is kept: taking one with a label that exists raises `FileExistsError` instead of replacing it,
@@ -55,8 +55,8 @@ changes, even if the size stays the same, and it does not change when only the f
 A snapshot is an ordinary Parquet file, which DuckDB reads directly:
 
 ```text
-SELECT * FROM read_parquet('<vault>/_system/snapshots/notes_2026-11-03.parquet');
-SELECT * FROM read_parquet('<vault>/_system/snapshots/*.parquet', filename = true);   -- all of them
+SELECT * FROM read_parquet('<vault>/_system/episteme/snapshots/notes_2026-11-03.parquet');
+SELECT * FROM read_parquet('<vault>/_system/episteme/snapshots/*.parquet', filename = true);   -- all of them
 ```
 
 ## Comparing with the live database
@@ -74,7 +74,7 @@ The vault was then synced. In the queries, `previous` is the snapshot:
 
 ```text
 CREATE VIEW previous AS
-SELECT * FROM read_parquet('<vault>/_system/snapshots/notes_2026-11-03.parquet');
+SELECT * FROM read_parquet('<vault>/_system/episteme/snapshots/notes_2026-11-03.parquet');
 ```
 
 Notes that were added or removed:

@@ -1,8 +1,9 @@
 """The generic :class:`Database`: Episteme's index of the vault, on any engine."""
 
 import json
+import logging
 import time
-from datetime import datetime
+from datetime import date, datetime, time as day_time
 import unicodedata
 from collections.abc import Iterable, Iterator
 from pathlib import Path, PurePosixPath
@@ -13,8 +14,11 @@ from episteme.database.engine import DatabaseEngine, Row, create_engine
 from episteme.database.migrations import Migrations
 from episteme.database.queries import QueryStore
 from episteme.models.database import Snapshot
-from episteme.models.obsidian import CategoryDirectory, MarkdownNote
+from episteme.models.obsidian import CategoryDirectory, MarkdownNote, Priority, Task, TaskState
 from episteme.models.sync import ObsidianSyncResult
+
+
+logger = logging.getLogger("episteme")
 
 
 class Database:
@@ -42,7 +46,7 @@ class Database:
     Examples:
         >>> database = Database(DataSettings(url=":memory:"))
         >>> sorted(database.tables())
-        ['notes', 'schema_history']
+        ['notes', 'schema_history', 'tasks']
         >>> database.close()
     """
 
@@ -155,6 +159,66 @@ class Database:
             note.__dict__["body_hash"] = body_hash
         return note
 
+    @classmethod
+    def _task_params(cls, task: Task) -> dict[str, Any] | None:
+        """Query parameters that store a task (the ``$name`` parameters of ``task_upsert``).
+
+        Only a task that is in its note with an id written there can be stored: its id is the key, and
+        its line and note are what a stored task is found by. Any other task gives ``None``.
+        """
+        if not (task.id_saved and task.line_number and task.source is not None):
+            return None
+        day = lambda value: value.date() if value is not None else None  # noqa: E731 - the notes keep days
+        return {
+            "task_id": task.id,
+            "note_path": cls._key(task.note_path),
+            "line_number": task.line_number,
+            "content": task.content,
+            "state": task.state.value,
+            "status_symbol": task.status_symbol,
+            "priority": task.priority.name.lower() if task.priority is not None else None,
+            "created": day(task.created),
+            "start_date": day(task.start_date),
+            "scheduled_date": day(task.scheduled_date),
+            "due_date": day(task.due_date),
+            "done_date": day(task.done_date),
+            "cancelled_date": day(task.cancelled_date),
+            "recurring": task.recurring,
+            "on_completion": task.on_completion,
+            "depends_on": task.depends_on,
+            "source": task.source,
+        }
+
+    @staticmethod
+    def _task_from_row(row: Row) -> Task:
+        """Build a :class:`Task` from a ``tasks`` row.
+
+        The task has its ``source`` and ``line_number``, so it can be passed to
+        :meth:`episteme.obsidian.tasks.ObsidianTasksManager.update_task`, which finds its line in the note again
+        (or says the note changed). Dates come back as midnight.
+        """
+        midnight = lambda value: datetime.combine(value, day_time.min) if value is not None else None  # noqa: E731
+        return Task(
+            id=row["task_id"],
+            id_saved=True,
+            note_path=PurePosixPath(row["note_path"]),
+            line_number=row["line_number"],
+            content=row["content"],
+            state=TaskState(row["state"]),
+            status_symbol=row["status_symbol"],
+            priority=Priority[row["priority"].upper()] if row["priority"] is not None else None,
+            created=midnight(row["created"]),
+            start_date=midnight(row["start_date"]),
+            scheduled_date=midnight(row["scheduled_date"]),
+            due_date=midnight(row["due_date"]),
+            done_date=midnight(row["done_date"]),
+            cancelled_date=midnight(row["cancelled_date"]),
+            recurring=row["recurring"],
+            on_completion=row["on_completion"],
+            depends_on=row["depends_on"],
+            source=row["source"],
+        )
+
     def upsert_note(self, note: MarkdownNote) -> None:
         """Insert a note, or update it if a note with the same path is stored.
 
@@ -265,15 +329,19 @@ class Database:
         unique_paths = list({self._key(path) for path in paths})
         if not unique_paths:
             return 0
-        return len(self.engine.fetch_all(self.queries["notes_delete"], {"paths": unique_paths}))
+        with self.engine.transaction():
+            self.engine.execute(self.queries["tasks_delete_by_note"], {"paths": unique_paths})
+            return len(self.engine.fetch_all(self.queries["notes_delete"], {"paths": unique_paths}))
 
     def clear_notes(self) -> int:
         """Delete every stored note.
 
         Returns:
-            Number of notes deleted.
+            Number of notes deleted. Their tasks are deleted too.
         """
-        return len(self.engine.fetch_all(self.queries["notes_clear"]))
+        with self.engine.transaction():
+            self.engine.execute(self.queries["tasks_clear"])
+            return len(self.engine.fetch_all(self.queries["notes_clear"]))
 
     @staticmethod
     def _note_differs(params: dict[str, Any], row: Row) -> bool:
@@ -286,8 +354,8 @@ class Database:
             return True
         return any(params[column] != value for column, value in row.items() if column != "frontmatter")
 
-    def sync_notes(self, notes: Iterable[MarkdownNote]) -> ObsidianSyncResult:
-        """Make the stored notes match exactly the given set, in one transaction.
+    def sync_notes(self, notes: Iterable[MarkdownNote], tasks: Iterable[Task] | None = None) -> ObsidianSyncResult:
+        """Make the stored notes (and, if given, tasks) match exactly the given set, in one transaction.
 
         Intended to be called after a vault ``map()``: new notes are added,
         notes whose data changed are rewritten, identical ones are left alone,
@@ -299,9 +367,16 @@ class Database:
                 ``vault.root.iter_notes()``. Their frontmatter is stored, which
                 reads each note's file if that has not happened yet. If a path
                 appears more than once, the last note wins.
+            tasks: Every task currently in those notes, as read by
+                :meth:`episteme.obsidian.ObsidianVault.scan_for_tasks`. When given, the stored tasks are made to
+                match them in the same transaction, so a failure changes neither. When ``None`` the stored
+                tasks are not touched. Only tasks with an id written in their note are stored (the id is the
+                key; see the ``tasks`` table); the others, and tasks of notes that are not in ``notes``,
+                are ignored. If an id is on more than one task, the first is stored and the others are
+                reported in ``duplicate_task_ids``.
 
         Returns:
-            What changed: how many notes were added, updated, left unchanged
+            What changed: how many notes (and tasks) were added, updated, left unchanged
             and removed, and how long the database work took.
 
         Examples:
@@ -322,6 +397,17 @@ class Database:
             (2, 0, 0, 0)
             (0, 0, 2, 0)
             (0, 0, 1, 1)
+
+        Tasks are synced along with the notes:
+
+            >>> from episteme.models.obsidian import Task
+            >>> database = Database(DataSettings(url=":memory:"))
+            >>> note = MarkdownNote(name="n", path="n.md")
+            >>> task = Task.from_markdown("- [ ] Pay rent 🆔 rent01 📅 2026-12-01", "n.md", line_number=1)
+            >>> result = database.sync_notes([], [task])    # its note is not in the vault: ignored
+            >>> result.tasks_added
+            0
+            >>> database.close()
         """
         params = {p["path"]: p for p in (self._note_params(note) for note in notes)}
         started = time.perf_counter()
@@ -339,14 +425,72 @@ class Database:
             if removed:
                 self.engine.execute(self.queries["notes_delete"], {"paths": list(removed)})
             self.engine.execute_many(self.queries["note_upsert"], list(written.values()))
+            task_counts = self._sync_tasks(tasks, params.keys()) if tasks is not None else {}
         added = len(params.keys() - stored.keys())
         return ObsidianSyncResult(
+            **task_counts,
             added=added,
             updated=len(written) - added,
             unchanged=len(params) - len(written),
             removed=len(removed),
             database_seconds=time.perf_counter() - started,
         )
+
+    @staticmethod
+    def _task_differs(params: dict[str, Any], row: Row) -> bool:
+        """Whether the data that would be stored for a task differs from a stored ``tasks`` row."""
+        return any(params[column] != value for column, value in row.items())
+
+    def _sync_tasks(self, tasks: Iterable[Task], note_paths: Iterable[str]) -> dict[str, Any]:
+        """Make the stored tasks match ``tasks``; must run inside a transaction. Returns the counts."""
+        notes = set(note_paths)
+        wanted: dict[str, dict[str, Any]] = {}
+        duplicates: list[str] = []
+        for task in tasks:
+            task_params = self._task_params(task)
+            if task_params is None or task_params["note_path"] not in notes:
+                continue
+            if task_params["task_id"] in wanted:
+                if task_params["task_id"] not in duplicates:
+                    duplicates.append(task_params["task_id"])
+                logger.warning(f"Task id '{task.id}' is on more than one task; only the first is stored.")
+                continue
+            wanted[task_params["task_id"]] = task_params
+        stored = {row["task_id"]: row for row in self.engine.fetch_all(self.queries["tasks_select"], {"note_path": None})}
+        removed = stored.keys() - wanted.keys()
+        written = {
+            task_id: task_params
+            for task_id, task_params in wanted.items()
+            if task_id not in stored or self._task_differs(task_params, stored[task_id])
+        }
+        if removed:
+            self.engine.execute(self.queries["tasks_delete"], {"task_ids": list(removed)})
+        self.engine.execute_many(self.queries["task_upsert"], list(written.values()))
+        added = len(wanted.keys() - stored.keys())
+        return {
+            "tasks_added": added,
+            "tasks_updated": len(written) - added,
+            "tasks_unchanged": len(wanted) - len(written),
+            "tasks_removed": len(removed),
+            "duplicate_task_ids": duplicates,
+        }
+
+    def iter_tasks(self, note_path: PurePosixPath | Path | str | None = None) -> Iterator[Task]:
+        """Iterate over the stored tasks, ordered by note and line.
+
+        Args:
+            note_path: Only the tasks of this note (relative to the vault root); ``None`` for every task.
+
+        Yields:
+            Tasks that carry their ``source`` and ``line_number``, so they can be updated in their note.
+        """
+        key = self._key(note_path) if note_path is not None else None
+        for row in self.engine.iterate(self.queries["tasks_select"], {"note_path": key}):
+            yield self._task_from_row(row)
+
+    def count_tasks(self) -> int:
+        """Number of stored tasks."""
+        return self.engine.fetch_one(self.queries["tasks_count"])["count"]
 
     def snapshot(self, path: Path | str, overwrite: bool = False) -> Snapshot:
         """Write the current state of the notes to a Parquet file, to compare against later.

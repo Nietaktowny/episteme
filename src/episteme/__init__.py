@@ -99,7 +99,8 @@ class Episteme:
             (1, 0, True)
         """
         self.obsidian.map()
-        result = self.data.sync_notes(self.obsidian)
+        tasks = self.obsidian.scan_for_tasks(require_id=True)  # only tasks with an id written in their note are stored
+        result = self.data.sync_notes(self.obsidian, tasks)
         return result.model_copy(update={"mapping_seconds": self.obsidian.statistics.mapping_duration or 0.0})
 
     def snapshot(self, label: str | None = None, overwrite: bool = False) -> Snapshot:
@@ -134,7 +135,7 @@ class Episteme:
             ...     ))
             ...     snapshot = episteme.snapshot("2026-11-20")
             ...     snapshot.notes, snapshot.path.relative_to(tmp).as_posix()
-            (1, '_system/snapshots/notes_2026-11-20.parquet')
+            (1, '_system/episteme/snapshots/notes_2026-11-20.parquet')
         """
         label = label if label is not None else date.today().isoformat()
         if not re.fullmatch(r"[A-Za-z0-9][A-Za-z0-9._-]*", label):

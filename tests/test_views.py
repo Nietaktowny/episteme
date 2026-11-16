@@ -15,6 +15,7 @@ EXPECTED_VIEWS = {
     "vault_notes", "evergreen_notes", "evergreen_placeholders", "project_notes", "source_notes",
     "daily_notes", "weekly_reviews", "review_schedule", "evergreen_anki_state", "source_topics",
     "property_usage", "property_issues", "pkm_design_tree",
+    "vault_tasks", "open_tasks", "overdue_tasks", "tasks_per_note",
 }
 
 
@@ -516,7 +517,7 @@ class TestTheViewsThemselves:
             world.engine.execute(f"DELETE FROM {view}")
 
     def test_tables_do_not_include_views(self, world: Database):
-        assert set(world.tables()) == {"notes", "schema_history"}
+        assert set(world.tables()) == {"notes", "schema_history", "tasks"}
 
     def test_views_follow_the_data(self, tmp_path: Path):
         write(tmp_path, "a.md", "type: evergreen\ncreated: 2026-01-01\ndomain: ai")
@@ -532,12 +533,16 @@ class TestTheViewsThemselves:
                 assert database.engine.fetch_all(f"SELECT * FROM {view}") == []
 
     def test_no_view_exposes_an_absolute_path(self, world: Database):
-        for view in EXPECTED_VIEWS - {"property_usage"}:
+        task_views = {"vault_tasks", "open_tasks", "overdue_tasks", "tasks_per_note"}  # their column is note_path
+        for view in EXPECTED_VIEWS - {"property_usage"} - task_views:
             for row in world.engine.fetch_all(f"SELECT path FROM {view}"):
                 assert not row["path"].startswith("/"), (view, row["path"])
+        for view in task_views:
+            for row in world.engine.fetch_all(f"SELECT note_path FROM {view}"):
+                assert not row["note_path"].startswith("/"), (view, row["note_path"])
 
     def test_views_are_created_by_migrations(self, world: Database):
-        assert {"3", "4"} <= {m.version for m in world.migrations.applied()}
+        assert {"3", "4", "7"} <= {m.version for m in world.migrations.applied()}
 
     def test_the_views_are_listed_with_their_descriptions(self, world: Database):
         assert "uncovered_days" in world.views()["weekly_reviews"]

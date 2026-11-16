@@ -3,12 +3,14 @@
 import hashlib
 import logging
 import re
+import secrets
+import string
 import unicodedata
 from functools import cached_property
 from pathlib import Path, PurePosixPath
-from datetime import datetime
+from datetime import date, datetime, time, timedelta
 from collections.abc import Iterator
-from typing import Any
+from typing import Any, Literal, Self
 from enum import StrEnum, auto
 
 import yaml
@@ -16,6 +18,7 @@ from pydantic import BaseModel, Field, field_validator
 from rich.markup import escape
 from rich.panel import Panel
 from rich.table import Table
+from rich.text import Text
 from rich.tree import Tree
 
 logger = logging.getLogger("episteme")
@@ -610,3 +613,450 @@ class ObsidianStatistics(BaseModel):
         table.add_row("Last Calculated At", f"{self.calculated_at:%Y-%m-%d %H:%M:%S}")
 
         return table
+    
+class Priority(StrEnum):
+    LOWEST = "lowest priority"
+    LOW = "low priority"
+    MEDIUM = "medium priority"
+    HIGH = "high priority"
+    HIGHEST = "highest priority"
+
+
+# Emoji of the Obsidian Tasks plugin. ``️`` (emoji variation selector) is stripped before parsing.
+_PRIORITY_EMOJI = {
+    Priority.HIGHEST: "🔺",
+    Priority.HIGH: "⏫",
+    Priority.MEDIUM: "🔼",
+    Priority.LOW: "🔽",
+    Priority.LOWEST: "⏬",
+}
+_DATE_EMOJI = {
+    "created": "➕",
+    "start_date": "🛫",
+    "scheduled_date": "⏳",
+    "due_date": "📅",
+    "done_date": "✅",
+    "cancelled_date": "❌",
+}
+_TEXT_EMOJI = {"recurring": "🔁", "on_completion": "🏁", "id": "🆔", "depends_on": "⛔"}
+_ID = re.compile(r"[\w-]+")
+_TASK_LINE = re.compile(r"^(?P<indent>\s*)[-*+]\s+\[(?P<status>.)\]\s?(?P<text>.*)$")
+_DATE = re.compile(r"\d{4}-\d{2}-\d{2}")
+
+
+PriorityName = Literal["highest", "high", "medium", "low", "lowest"]
+"""Names of the priorities, for ``Task.set_priority("high")``."""
+
+StateName = Literal["todo", "in_progress", "done", "cancelled", "non_task"]
+"""Names of the task states, for ``Task.set_state("done")``."""
+
+DateLike = date | datetime | str
+"""A day: a ``date``, a ``datetime`` (its time is dropped) or text ``"YYYY-MM-DD"``."""
+
+
+def _today() -> datetime:
+    return datetime.combine(date.today(), time.min)
+
+
+def _resolve_date(
+    when: DateLike | None, year: int | None, month: int | None, day: int | None, in_days: int | None,
+) -> datetime | None:
+    """The day a date helper was asked for, as midnight; ``None`` when it was asked for nothing.
+
+    Exactly one way of saying it is allowed: ``when``, all of ``year``/``month``/``day``, or ``in_days``.
+    """
+    ymd = (year, month, day)
+    given = [when is not None, any(part is not None for part in ymd), in_days is not None]
+    if sum(given) > 1:
+        raise ValueError("Give the date in one way only: a date, year/month/day, or in_days.")
+    if when is not None:
+        if isinstance(when, str):
+            parsed = _parse_date(when)
+            if parsed is None:
+                raise ValueError(f"'{when}' is not a date; use YYYY-MM-DD.")
+            return parsed
+        return datetime.combine(when.date() if isinstance(when, datetime) else when, time.min)
+    if any(part is not None for part in ymd):
+        if None in ymd:
+            raise ValueError("year, month and day must be given together.")
+        return datetime(year, month, day)
+    if in_days is not None:
+        return _today() + timedelta(days=in_days)
+    return None
+
+
+def new_task_id() -> str:
+    """A new task id: 6 random lowercase letters and digits, like the ids the Tasks plugin makes."""
+    alphabet = string.ascii_lowercase + string.digits
+    return "".join(secrets.choice(alphabet) for _ in range(6))
+
+
+def _parse_date(value: str) -> datetime | None:
+    """Parse ``YYYY-MM-DD`` strictly; ``None`` for anything else, including impossible dates."""
+    if not _DATE.fullmatch(value):
+        return None
+    try:
+        return datetime.strptime(value, "%Y-%m-%d")
+    except ValueError:
+        return None
+
+
+class TaskState(StrEnum):
+    """Status type of a task, as in the Obsidian Tasks plugin.
+
+    The plugin lets a vault define custom checkbox symbols (``[>]``, ``[!]``...), each mapped to
+    one of these types. :attr:`Task.status_symbol` keeps the exact symbol.
+    """
+
+    TODO = auto()
+    IN_PROGRESS = auto()
+    DONE = auto()
+    CANCELLED = auto()
+    NON_TASK = auto()
+
+
+# Default symbol of each state, and the state of the plugin's core symbols. Unknown symbols are TODO.
+_STATE_SYMBOL = {
+    TaskState.TODO: " ",
+    TaskState.IN_PROGRESS: "/",
+    TaskState.DONE: "x",
+    TaskState.CANCELLED: "-",
+    TaskState.NON_TASK: "~",
+}
+_SYMBOL_STATE = {**{symbol: state for state, symbol in _STATE_SYMBOL.items()}, "X": TaskState.DONE}
+
+
+class Task(BaseModel):
+    r"""A task of a note, convertible from and to the Obsidian Tasks emoji format.
+
+    Examples:
+        >>> task = Task.from_markdown("- [ ] Pay rent 🆔 rent01 🔁 every month ⏫ 📅 2026-12-01", "Home.md")
+        >>> task.content, task.priority, task.recurring, task.due_date.date().isoformat()
+        ('Pay rent', <Priority.HIGH: 'high priority'>, 'every month', '2026-12-01')
+        >>> task.to_markdown()
+        '- [ ] Pay rent 🆔 rent01 ⏫ 🔁 every month 📅 2026-12-01'
+        >>> Task.from_markdown("- [x] Done ✅ 2026-01-02", "a.md").is_done
+        True
+        >>> cancelled = Task.from_markdown("- [-] Skip ❌ 2026-02-03", "a.md")
+        >>> cancelled.state, cancelled.cancelled_date.date().isoformat()
+        (<TaskState.CANCELLED: 'cancelled'>, '2026-02-03')
+        >>> custom = Task.from_markdown("- [>] Forwarded", "a.md")
+        >>> custom.state, custom.status_symbol, custom.to_markdown() == f"- [>] Forwarded 🆔 {custom.id}"
+        (<TaskState.TODO: 'todo'>, '>', True)
+        >>> Task.from_markdown("not a task", "a.md") is None
+        True
+    """
+
+    note_path: PurePosixPath = Field(..., description="Path of the note containing the task, relative to the vault root")
+    content: str = Field(..., description="Text of the task, without the checkbox marker and metadata")
+    state: TaskState = Field(default=TaskState.TODO, description="Status type of the task")
+    status_symbol: str | None = Field(
+        default=None, min_length=1, max_length=1,
+        description="Exact character inside the checkbox, for custom statuses; None means the state's default",
+    )
+    id: str = Field(
+        default_factory=new_task_id,
+        description="Identifier of the task (🆔). Always set: a task read without one gets a new id, "
+                    "which is written to the note the next time the task is saved",
+    )
+    due_date: datetime | None = Field(default=None, description="Due date of the task, if any")
+    scheduled_date: datetime | None = Field(default=None, description="Scheduled date of the task, if any")
+    start_date: datetime | None = Field(default=None, description="Start date of the task, if any")
+    priority: Priority | None = Field(
+        default=Priority.LOW,
+        description="Priority of the task. New tasks get a default; a task read from a note without one "
+                    "keeps None (the plugin's 'normal') and is saved without one",
+    )
+    created: datetime | None = Field(
+        default_factory=datetime.now,
+        description="Creation date of the task (➕). New tasks get today; a task read from a note without one "
+                    "keeps None and is saved without one",
+    )
+    cancelled_date: datetime | None = Field(default=None, description="Cancellation date of the task (❌), if any")
+    recurring: str | None = Field(default=None, description="Recurring pattern of the task, if any")
+    done_date: datetime | None = Field(default=None, description="Completion date of the task (✅), if any")
+    on_completion: str | None = Field(default=None, description="Action on completion (🏁), if any")
+    depends_on: str | None = Field(default=None, description="Comma-separated ids of tasks this one depends on (⛔)")
+    id_saved: bool = Field(
+        default=False,
+        description="Whether the id is written in the note (the line has a 🆔). A task read without one has a "
+                    "made-up id that is not saved until the task is. Only saved ids are stable",
+    )
+    line_number: int | None = Field(default=None, ge=1, description="1-based line of the task in its note when it was read")
+    source: str | None = Field(
+        default=None, repr=False,
+        description="Exact line the task was read from; it is how the task is found again when it is updated or deleted",
+    )
+
+    @property
+    def is_done(self) -> bool:
+        """Whether the task is in the ``DONE`` state."""
+        return self.state is TaskState.DONE
+
+    @property
+    def cancelled(self) -> bool:
+        """Whether the task is in the ``CANCELLED`` state."""
+        return self.state is TaskState.CANCELLED
+
+    @classmethod
+    def from_markdown(cls, line: str, note_path: PurePosixPath | str, line_number: int | None = None) -> "Task | None":
+        """Parse one markdown task line (``- [ ] text 📅 2026-01-01``).
+
+        The checkbox symbol gives the state: ``x``/``X`` done, ``-`` cancelled, ``/`` in progress,
+        ``~`` non-task; any other (custom) symbol is a to-do whose symbol is kept in ``status_symbol``.
+        Metadata is read from the end of the line, so emoji inside the description are left alone.
+
+        Args:
+            line: A single line of a note.
+            note_path: Path of the note, relative to the vault root.
+            line_number: 1-based line of the task in its note, if known. Together with the line
+                itself (kept in ``source``) it lets the task be found again to update or delete it.
+
+        Returns:
+            The task, or ``None`` when the line is not a markdown task.
+        """
+        match = _TASK_LINE.match(line.rstrip())
+        if match is None:
+            return None
+        status = match["status"]
+        text = match["text"].replace("️", "")
+        fields: dict[str, Any] = {}
+
+        markers = {emoji: field for field, emoji in {**_DATE_EMOJI, **_TEXT_EMOJI}.items()}
+        markers.update({emoji: priority for priority, emoji in _PRIORITY_EMOJI.items()})
+        while True:
+            position = max((text.rfind(emoji) for emoji in markers), default=-1)
+            if position < 0:
+                break
+            emoji, value = text[position], text[position + 1:].strip()
+            target = markers[emoji]
+            if isinstance(target, Priority):
+                valid = not value
+            elif target in _DATE_EMOJI:
+                valid = _parse_date(value) is not None
+            elif target == "id":
+                valid = _ID.fullmatch(value) is not None
+            else:
+                valid = bool(value)
+            if not valid or (target in fields):
+                break
+            if isinstance(target, Priority):
+                fields["priority"] = target
+            elif target in _DATE_EMOJI:
+                fields[target] = _parse_date(value)
+            else:
+                fields[target] = value
+            text = text[:position].rstrip()
+
+        # What the line does not say stays unset (None), instead of getting the defaults of a new task.
+        # The id is the exception: it is always filled, and written when the task is saved.
+        fields = {"created": None, "priority": None, **fields}
+        return cls(
+            id_saved="id" in fields,
+            note_path=PurePosixPath(note_path),
+            line_number=line_number,
+            source=line.rstrip("\r\n"),
+            content=text.strip(),
+            state=_SYMBOL_STATE.get(status, TaskState.TODO),
+            status_symbol=None if status in _SYMBOL_STATE else status,
+            **fields,
+        )
+
+    # --- editing helpers --------------------------------------------------------------------
+    # They change the task in place and return it, so they can be chained:
+    #   task.set_priority("high").set_due(in_days=3)
+    # None of them touches the note; save the task with ObsidianTasksManager.update_task.
+
+    def set_state(self, state: TaskState | StateName) -> Self:
+        """Set the state of the task, e.g. ``"done"``. The dates are left alone (see :meth:`complete`).
+
+        A custom checkbox symbol belongs to the old state, so it is dropped.
+
+        Raises:
+            ValueError: If ``state`` is not a state.
+
+        Examples:
+            >>> task = Task(note_path="a.md", content="t")
+            >>> task.set_state("in_progress").state
+            <TaskState.IN_PROGRESS: 'in_progress'>
+        """
+        try:
+            self.state = TaskState(state)
+        except ValueError:
+            raise ValueError(f"'{state}' is not a task state; use one of {[s.value for s in TaskState]}.") from None
+        self.status_symbol = None
+        return self
+
+    def set_priority(self, priority: Priority | PriorityName | None) -> Self:
+        """Set the priority: ``"highest"``, ``"high"``, ``"medium"``, ``"low"``, ``"lowest"``, or ``None`` for none.
+
+        Raises:
+            ValueError: If ``priority`` is not a priority.
+
+        Examples:
+            >>> task = Task(note_path="a.md", content="t")
+            >>> task.set_priority("high").priority
+            <Priority.HIGH: 'high priority'>
+            >>> task.set_priority(None).priority is None
+            True
+        """
+        if priority is None or isinstance(priority, Priority):
+            self.priority = priority
+        elif str(priority).upper() in Priority.__members__:
+            self.priority = Priority[str(priority).upper()]
+        else:
+            raise ValueError(f"'{priority}' is not a priority; use highest, high, medium, low or lowest.")
+        return self
+
+    def set_due(
+        self, when: DateLike | None = None, *,
+        year: int | None = None, month: int | None = None, day: int | None = None, in_days: int | None = None,
+    ) -> Self:
+        """Set the due date (📅). Say the day in one way; with none of them the date is cleared.
+
+        Args:
+            when: A ``date``, a ``datetime`` or ``"YYYY-MM-DD"``.
+            year: With ``month`` and ``day``: the day written out.
+            month: See ``year``.
+            day: See ``year``.
+            in_days: That many days from today (negative for the past).
+
+        Raises:
+            ValueError: If the date is invalid or is given in more than one way.
+
+        Examples:
+            >>> task = Task(note_path="a.md", content="t")
+            >>> task.set_due("2026-12-01").due_date
+            datetime.datetime(2026, 12, 1, 0, 0)
+            >>> task.set_due(year=2027, month=1, day=31).due_date
+            datetime.datetime(2027, 1, 31, 0, 0)
+            >>> task.set_due(in_days=0).due_date.date() == date.today()
+            True
+            >>> task.set_due().due_date is None
+            True
+        """
+        self.due_date = _resolve_date(when, year, month, day, in_days)
+        return self
+
+    def set_scheduled(
+        self, when: DateLike | None = None, *,
+        year: int | None = None, month: int | None = None, day: int | None = None, in_days: int | None = None,
+    ) -> Self:
+        """Set the scheduled date (⏳). Takes the same arguments as :meth:`set_due`."""
+        self.scheduled_date = _resolve_date(when, year, month, day, in_days)
+        return self
+
+    def set_start(
+        self, when: DateLike | None = None, *,
+        year: int | None = None, month: int | None = None, day: int | None = None, in_days: int | None = None,
+    ) -> Self:
+        """Set the start date (🛫). Takes the same arguments as :meth:`set_due`."""
+        self.start_date = _resolve_date(when, year, month, day, in_days)
+        return self
+
+    def start(self) -> Self:
+        """Mark the task as in progress."""
+        return self.set_state("in_progress")
+
+    def complete(self, when: DateLike | None = None) -> Self:
+        """Mark the task as done on ``when`` (default today): sets the state and the done date (✅).
+
+        Like :meth:`update_task <episteme.obsidian.tasks.ObsidianTasksManager.update_task>`, it does not
+        create the next occurrence of a recurring task.
+
+        Examples:
+            >>> task = Task(note_path="a.md", content="t").complete("2026-01-02")
+            >>> task.is_done, task.done_date.date().isoformat()
+            (True, '2026-01-02')
+        """
+        self.set_state("done")
+        self.done_date = _resolve_date(when, None, None, None, None) or _today()
+        self.cancelled_date = None
+        return self
+
+    def cancel(self, when: DateLike | None = None) -> Self:
+        """Mark the task as cancelled on ``when`` (default today): sets the state and the cancelled date (❌)."""
+        self.set_state("cancelled")
+        self.cancelled_date = _resolve_date(when, None, None, None, None) or _today()
+        self.done_date = None
+        return self
+
+    def reopen(self) -> Self:
+        """Make the task a to-do again, without a done or cancelled date.
+
+        Examples:
+            >>> task = Task(note_path="a.md", content="t").complete().reopen()
+            >>> task.state.value, task.done_date
+            ('todo', None)
+        """
+        self.set_state("todo")
+        self.done_date = self.cancelled_date = None
+        return self
+
+    def __rich__(self) -> Text:
+        """Render the task as one styled line: checkbox, text, then its metadata.
+
+        The text is never read as rich markup, so brackets in a task are safe.
+
+        Returns:
+            :class:`rich.text.Text` with the state shown as a checkbox, done tasks dimmed and
+            cancelled ones struck through.
+
+        Examples:
+            >>> Task.from_markdown("- [ ] Pay [rent] 🆔 r1 ⏫ 📅 2026-12-01", "a.md").__rich__().plain
+            '☐ Pay [rent]  ⏫ high  📅 2026-12-01  🆔 r1'
+            >>> Task.from_markdown("- [x] Done 🆔 d1 ✅ 2026-01-02", "a.md").__rich__().plain
+            '☑ Done  ✅ 2026-01-02  🆔 d1'
+        """
+        checkbox, style = {
+            TaskState.TODO: ("☐", "bold"),
+            TaskState.IN_PROGRESS: ("◐", "bold yellow"),
+            TaskState.DONE: ("☑", "green dim"),
+            TaskState.CANCELLED: ("☒", "red strike dim"),
+            TaskState.NON_TASK: ("•", "dim"),
+        }[self.state]
+        if self.status_symbol:
+            checkbox = f"[{self.status_symbol}]"
+        text = Text(f"{checkbox} ", style=style)
+        text.append(self.content, style=style)
+
+        details: list[tuple[str, str]] = []
+        if self.priority is not None:
+            colors = {Priority.HIGHEST: "bold red", Priority.HIGH: "red", Priority.MEDIUM: "yellow",
+                      Priority.LOW: "blue", Priority.LOWEST: "dim blue"}
+            details.append((f"{_PRIORITY_EMOJI[self.priority]} {self.priority.name.lower()}", colors[self.priority]))
+        if self.recurring:
+            details.append((f"🔁 {self.recurring}", "magenta"))
+        for field, emoji in _DATE_EMOJI.items():
+            if (value := getattr(self, field)) is not None:
+                details.append((f"{emoji} {value:%Y-%m-%d}", "cyan" if field == "due_date" else "dim"))
+        if self.id:
+            details.append((f"🆔 {self.id}", "dim"))
+        if self.depends_on:
+            details.append((f"⛔ {self.depends_on}", "dim"))
+        for detail, detail_style in details:
+            text.append("  ")
+            text.append(detail, style=detail_style)
+        return text
+
+    def to_markdown(self) -> str:
+        """Render the task as one markdown line in the Obsidian Tasks emoji format.
+
+        Returns:
+            ``- [ ] text`` followed by the metadata, in the order the plugin writes it.
+        """
+        status = self.status_symbol or _STATE_SYMBOL[self.state]
+        parts = [f"- [{status}] {self.content}"]
+        parts.append(f"{_TEXT_EMOJI['id']} {self.id}")
+        if self.depends_on:
+            parts.append(f"{_TEXT_EMOJI['depends_on']} {self.depends_on}")
+        if self.priority is not None:
+            parts.append(_PRIORITY_EMOJI[self.priority])
+        if self.recurring:
+            parts.append(f"{_TEXT_EMOJI['recurring']} {self.recurring}")
+        if self.on_completion:
+            parts.append(f"{_TEXT_EMOJI['on_completion']} {self.on_completion}")
+        for field, emoji in _DATE_EMOJI.items():  # created, start, scheduled, due, done, cancelled
+            if (value := getattr(self, field)) is not None:
+                parts.append(f"{emoji} {value:%Y-%m-%d}")
+        return " ".join(parts)

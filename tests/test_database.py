@@ -9,7 +9,7 @@ from episteme.database import Database, DatabaseEngine, MigrationError, QuerySto
 from episteme.database._duckdb import DuckDBEngine
 from episteme.models.obsidian import MarkdownNote
 
-EXPECTED_TABLES = {"notes", "schema_history"}
+EXPECTED_TABLES = {"notes", "schema_history", "tasks"}
 EXPECTED_INDEXES = {
     "idx_notes_name",
     "idx_notes_category_directory",

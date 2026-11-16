@@ -25,9 +25,9 @@ class ObsidianSettings(BaseModel):
         >>> settings.vault_root
         PosixPath('.')
         >>> settings.skip_dirs
-        ['.obsidian']
+        ['.obsidian', '_lib']
         >>> settings.snapshots_dir
-        PosixPath('_system/snapshots')
+        PosixPath('_system/episteme/snapshots')
 
         Values passed as strings are coerced to ``Path``:
 
@@ -36,8 +36,8 @@ class ObsidianSettings(BaseModel):
     """
 
     vault_root: Path = Field(Path("."), description="Path to root of Obsidian vault")
-    skip_dirs: list[str] = Field(default_factory=lambda: [".obsidian"], description="List of directories names to skip when mapping the vault")
-    snapshots_dir: Path = Field(Path("_system/snapshots"), description="Folder for database snapshots, relative to the vault root")
+    skip_dirs: list[str] = Field(default_factory=lambda: [".obsidian", "_lib"], description="List of directories names to skip when mapping the vault")
+    snapshots_dir: Path = Field(Path("_system/episteme/snapshots"), description="Folder for database snapshots, relative to the vault root")
 
     @field_validator("snapshots_dir")
     @classmethod

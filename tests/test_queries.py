@@ -71,6 +71,7 @@ class TestBundledSql:
         "history_create", "history_list", "history_insert", "tables", "views", "indexes",
         "note_upsert", "note_get", "note_exists", "notes_select", "notes_count",
         "notes_delete", "notes_clear", "snapshot_notes",
+        "task_upsert", "tasks_select", "tasks_count", "tasks_delete", "tasks_delete_by_note", "tasks_clear",
     }
 
     def test_has_the_required_queries(self, engine: str):

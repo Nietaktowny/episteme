@@ -157,7 +157,7 @@ class ImportGraph:
 RULES: dict[str, set[str]] = {
     "episteme.cli": set(),
     "episteme.models": {"episteme.models"},
-    "episteme.obsidian": {"episteme.cli", "episteme.models.obsidian"},
+    "episteme.obsidian": {"episteme.cli", "episteme.models.obsidian", "episteme.obsidian"},
     "episteme.database": {"episteme.cli", "episteme.models", "episteme.database"},
 }
 # "episteme" (the package root) and "episteme.__main__" have no rule: they compose the parts.

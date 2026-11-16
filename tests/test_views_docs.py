@@ -28,8 +28,10 @@ SAMPLE: dict[str, tuple[str | None, str | None, str]] = {
     # Lanes and projects
     "20_Lanes/1_Relationships.md": ("type: lane\ncreated: 2026-01-01\nreview_cycle: weekly\nlast_review: 2026-11-01", None, "L"),
     "20_Lanes/2_Competence Enhancement.md": ("type: lane\ncreated: 2026-01-01\nreview_cycle: monthly\nlast_review: 2026-10-01", None, "L"),
-    "10_Projects/Episteme.md": ('type: project\nstatus: active\ncreated: 2026-10-01\nlane: "[[2_Competence Enhancement]]"', None, "P"),
-    "10_Projects/Garden.md": ('type: project\nstatus: paused\ncreated: 2026-08-01\nlane: "[[1_Relationships]]"', None, "P"),
+    "10_Projects/Episteme.md": ('type: project\nstatus: active\ncreated: 2026-10-01\nlane: "[[2_Competence Enhancement]]"', None,
+                                "P\n- [ ] Write the docs 🆔 docs01 ⏫ 📅 2099-01-01\n- [/] Add task views 🆔 views1 📅 2026-11-10\n- [x] Parse tasks 🆔 parse1 ✅ 2026-11-12\n- [ ] A checkbox without an id\n"),
+    "10_Projects/Garden.md": ('type: project\nstatus: paused\ncreated: 2026-08-01\nlane: "[[1_Relationships]]"', None,
+                              "P\n- [ ] Water the plants 🆔 plant1 📅 2026-10-01\n- [-] Buy a hose 🆔 hose01 ❌ 2026-10-02\n"),
     "10_Projects/Ghost.md": ('type: project\nstatus: active\ncreated: 2026-10-02\nlane: "[[Missing lane]]"', None, "P"),
     "40_Archive/Archived Projects/Finished.md": ('type: project\nstatus: done\ncreated: 2026-05-01\nclosed_date: 2026-11-08\nlane: "[[2_Competence Enhancement]]"', None, "P"),
     "40_Archive/Archived Projects/Old project.md": ("type: project\nstatus: finished\ncreated: 2026-05-01\nupdated: 2026-06-01", None, "P"),
@@ -38,7 +40,7 @@ SAMPLE: dict[str, tuple[str | None, str | None, str]] = {
     "30_Resources/Sources/Fowler on APIs.md": ("type: source\ncreated: 2026-11-09\nkind: article\ntopics: [software_architecture]", None, "S"),
     "30_Resources/Sources/Strange podcast.md": ("type: source\ncreated: 2026-11-09\nkind: podcast", None, "S"),
     # Daily notes: four in the usual folder, one in another
-    "_system/00_Inbox/daily_log/2026-11-02.md": ("type: daily_note\ncreated: 2026-11-02", None, "D"),
+    "_system/00_Inbox/daily_log/2026-11-02.md": ("type: daily_note\ncreated: 2026-11-02", None, "D\n- [ ] Call mom 🆔 call01\n"),
     "_system/00_Inbox/daily_log/2026-11-03.md": ("type: daily_note\ncreated: 2026-11-03", None, "D"),
     "_system/00_Inbox/daily_log/2026-11-04.md": ("type: daily_note\ncreated: 2026-11-04", None, "D"),
     "_system/00_Inbox/daily_log/2026-11-05.md": ("type: daily_note\ncreated: 2026-11-05", None, "D"),
@@ -62,7 +64,8 @@ def build_sample(root: Path) -> Database:
             stamp = datetime.fromisoformat(mtime).timestamp()
             os.utime(path, (stamp, stamp))
     database = Database(DataSettings(url=":memory:"))
-    database.sync_notes(ObsidianVault(ObsidianSettings(vault_root=root)))
+    vault = ObsidianVault(ObsidianSettings(vault_root=root))
+    database.sync_notes(vault, vault.scan_for_tasks())
     return database
 
 

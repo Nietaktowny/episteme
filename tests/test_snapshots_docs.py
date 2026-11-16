@@ -20,7 +20,7 @@ def build_scenario(tmp: Path) -> Database:
     root = tmp / "vault"
     root.mkdir()
     database = sample.build_sample(root)
-    taken = database.snapshot(root / "_system" / "snapshots" / SNAPSHOT)
+    taken = database.snapshot(root / "_system" / "episteme" / "snapshots" / SNAPSHOT)
 
     (root / "10_Projects/Episteme.md").rename(root / "40_Archive/Archived Projects/Episteme.md")      # moved
     attention = root / "30_Resources/Evergreen/AI/Attention.md"

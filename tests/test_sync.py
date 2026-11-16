@@ -69,7 +69,7 @@ class TestSyncObsidian:
         assert episteme.data.get_note("a.md").frontmatter == {"status": "draft"}
 
     def test_raises_when_something_fails(self, episteme: Episteme, monkeypatch: pytest.MonkeyPatch):
-        monkeypatch.setattr(episteme.data, "sync_notes", lambda notes: (_ for _ in ()).throw(RuntimeError("boom")))
+        monkeypatch.setattr(episteme.data, "sync_notes", lambda notes, tasks=None: (_ for _ in ()).throw(RuntimeError("boom")))
         with pytest.raises(RuntimeError, match="boom"):
             episteme.sync_obsidian()
 
@@ -92,7 +92,7 @@ class TestSync:
         assert counts(result.obsidian) == (0, 0, 3, 0)
 
     def test_a_failure_is_reported_not_raised(self, episteme: Episteme, monkeypatch: pytest.MonkeyPatch):
-        def fail(notes):
+        def fail(notes, tasks=None):
             raise RuntimeError("database exploded")
 
         monkeypatch.setattr(episteme.data, "sync_notes", fail)
@@ -104,7 +104,7 @@ class TestSync:
         assert "Traceback (most recent call last)" in error.traceback
 
     def test_a_failed_system_reports_zero_changes(self, episteme: Episteme, monkeypatch: pytest.MonkeyPatch):
-        monkeypatch.setattr(episteme.data, "sync_notes", lambda notes: (_ for _ in ()).throw(OSError("disk")))
+        monkeypatch.setattr(episteme.data, "sync_notes", lambda notes, tasks=None: (_ for _ in ()).throw(OSError("disk")))
         result = episteme.sync()
         assert counts(result.obsidian) == (0, 0, 0, 0)
         assert result.changed == 0
@@ -116,7 +116,7 @@ class TestSync:
         assert episteme.data.count_notes() == 0
 
     def test_a_failure_is_logged_with_its_traceback(self, episteme: Episteme, monkeypatch: pytest.MonkeyPatch, caplog: pytest.LogCaptureFixture):
-        monkeypatch.setattr(episteme.data, "sync_notes", lambda notes: (_ for _ in ()).throw(RuntimeError("boom")))
+        monkeypatch.setattr(episteme.data, "sync_notes", lambda notes, tasks=None: (_ for _ in ()).throw(RuntimeError("boom")))
         with caplog.at_level(logging.ERROR, logger="episteme"):
             episteme.sync()
         assert "Syncing the Obsidian vault failed" in caplog.text
@@ -135,14 +135,14 @@ class TestSync:
 
     def test_sync_works_again_after_a_failure(self, episteme: Episteme, monkeypatch: pytest.MonkeyPatch):
         with monkeypatch.context() as patch:
-            patch.setattr(episteme.data, "sync_notes", lambda notes: (_ for _ in ()).throw(RuntimeError("once")))
+            patch.setattr(episteme.data, "sync_notes", lambda notes, tasks=None: (_ for _ in ()).throw(RuntimeError("once")))
             assert not episteme.sync().ok
         assert episteme.sync().ok
         assert episteme.data.count_notes() == 3
 
     @pytest.mark.parametrize("interruption", [KeyboardInterrupt, SystemExit])
     def test_interruptions_are_not_swallowed(self, episteme: Episteme, monkeypatch: pytest.MonkeyPatch, interruption: type):
-        monkeypatch.setattr(episteme.data, "sync_notes", lambda notes: (_ for _ in ()).throw(interruption()))
+        monkeypatch.setattr(episteme.data, "sync_notes", lambda notes, tasks=None: (_ for _ in ()).throw(interruption()))
         with pytest.raises(interruption):
             episteme.sync()
 

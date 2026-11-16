@@ -25,7 +25,7 @@ episteme.data.views()        # {"evergreen_notes": "Notes of type evergreen, ...
 - **Links are decoded.** `lane: "[[2_Competence Enhancement]]"` becomes
   `lane = '2_Competence Enhancement'`. The macro `link_target()` decodes any link the same way.
 - **Malformed values become `NULL`** and never make a view fail. `property_issues` reports them.
-- Every view has `path` and `name`. The typed views also have all columns of `vault_notes`.
+- Every note view has `path` and `name`. The typed views also have all columns of `vault_notes`. The task views are about tasks, so they have `note_path` and `note_name` instead.
 
 ## Views
 
@@ -44,6 +44,10 @@ episteme.data.views()        # {"evergreen_notes": "Notes of type evergreen, ...
 | `property_usage` | Every frontmatter property with the number of notes that use it, per type. |
 | `property_issues` | Violations of the registry, one row per issue (`rule`, `detail`). |
 | `pkm_design_tree` | The `pkm_design` notes as a tree: `parent`, `depth`, `trail`. |
+| `vault_tasks` | Every task with `note_name`, `category_directory`, `in_archive`, `is_open`, `is_overdue`, `days_overdue`. See [Tasks](tasks.md#in-the-database). |
+| `open_tasks` | The tasks that are `todo` or `in_progress`. |
+| `overdue_tasks` | Open tasks due before today, with `days_overdue`. |
+| `tasks_per_note` | Per note: tasks in each state, `total` and `overdue`. |
 
 ## Semantics of individual columns
 
@@ -84,6 +88,10 @@ A few details matter for the outputs:
 - Four daily notes are stored in `_system/00_Inbox/daily_log`, one in `00_Inbox/daily_log`.
 - The latest review ends on 2026-11-03; the one before it ended on 2026-10-04, so one day (2026-10-05)
   is not covered by any review.
+
+- Three notes of the sample hold tasks. A checkbox without an id (`A checkbox without an id` in `Episteme`) is
+  not a task, so it is not in the database. The due dates are either long past or in 2099, so which
+  tasks are overdue does not depend on the day the examples run.
 
 In the output tables, `NULL` means "no value", lists are shown in brackets and dates as `YYYY-MM-DD`.
 
@@ -294,6 +302,59 @@ ORDER BY notes DESC, rule;
 |---|---|
 | invalid_kind | 1 |
 | unresolved_lane | 1 |
+
+How many tasks there are in each state (the `tasks` table is described in [Tasks](tasks.md#in-the-database)):
+
+```sql
+SELECT state, count(*) AS tasks FROM vault_tasks GROUP BY state ORDER BY state;
+```
+
+| state | tasks |
+|---|---|
+| cancelled | 1 |
+| done | 1 |
+| in_progress | 1 |
+| todo | 3 |
+
+What is still to do, the nearest due date first:
+
+```sql
+SELECT note_name, content, state, priority, due_date
+FROM open_tasks
+ORDER BY due_date NULLS LAST, content;
+```
+
+| note_name | content | state | priority | due_date |
+|---|---|---|---|---|
+| Garden | Water the plants | todo | NULL | 2026-10-01 |
+| Episteme | Add task views | in_progress | NULL | 2026-11-10 |
+| Episteme | Write the docs | todo | high | 2099-01-01 |
+| 2026-11-02 | Call mom | todo | NULL | NULL |
+
+What is late:
+
+```sql
+SELECT task_id, note_name, content, due_date
+FROM overdue_tasks
+ORDER BY due_date;
+```
+
+| task_id | note_name | content | due_date |
+|---|---|---|---|
+| plant1 | Garden | Water the plants | 2026-10-01 |
+| views1 | Episteme | Add task views | 2026-11-10 |
+
+The same numbers per note, which is what `scan_for_tasks(summary=True)` prints for the vault:
+
+```sql
+SELECT * FROM tasks_per_note;
+```
+
+| note_path | note_name | todo | in_progress | done | cancelled | non_task | total | overdue |
+|---|---|---|---|---|---|---|---|---|
+| 10_Projects/Episteme.md | Episteme | 1 | 1 | 1 | 0 | 0 | 3 | 1 |
+| 10_Projects/Garden.md | Garden | 1 | 0 | 0 | 1 | 0 | 2 | 1 |
+| _system/00_Inbox/daily_log/2026-11-02.md | 2026-11-02 | 1 | 0 | 0 | 0 | 0 | 1 | 0 |
 
 ## Changing the views
 

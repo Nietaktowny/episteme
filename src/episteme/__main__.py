@@ -17,9 +17,7 @@ def main():
     )
     
     episteme = Episteme()
-    episteme.scheduler.add_job(lambda: print(episteme.sync()), minute="*/1", name="sync")
-
-    episteme.scheduler.start()
+    print(episteme.sync_obsidian())
     
 
 if __name__ == "__main__":

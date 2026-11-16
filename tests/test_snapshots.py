@@ -285,7 +285,7 @@ def episteme_for(vault_root: Path, **obsidian) -> Episteme:
 class TestEpistemeSnapshot:
     def test_writes_into_the_vault_under_the_snapshots_folder(self, vault_root: Path):
         snapshot = episteme_for(vault_root).snapshot("2026-11-20")
-        assert snapshot.path == vault_root / "_system" / "snapshots" / "notes_2026-11-20.parquet"
+        assert snapshot.path == vault_root / "_system" / "episteme" / "snapshots" / "notes_2026-11-20.parquet"
         assert snapshot.path.is_file()
 
     def test_the_label_defaults_to_todays_date(self, vault_root: Path):
@@ -314,7 +314,7 @@ class TestEpistemeSnapshot:
     def test_different_labels_give_different_files(self, vault_root: Path):
         episteme = episteme_for(vault_root)
         episteme.snapshot("one"), episteme.snapshot("two")
-        assert sorted(p.name for p in (vault_root / "_system" / "snapshots").iterdir()) == ["notes_one.parquet", "notes_two.parquet"]
+        assert sorted(p.name for p in (vault_root / "_system" / "episteme" / "snapshots").iterdir()) == ["notes_one.parquet", "notes_two.parquet"]
 
     @pytest.mark.parametrize("label", ["", "../escape", "a/b", ".hidden", "with space", "semi;colon", "tab\t", "new\nline", "Zażółć"])
     def test_invalid_labels_are_refused_before_anything_happens(self, vault_root: Path, label: str):
@@ -354,7 +354,7 @@ class TestEpistemeSnapshot:
 
 class TestSnapshotsDirSetting:
     def test_default(self):
-        assert ObsidianSettings().snapshots_dir == Path("_system/snapshots")
+        assert ObsidianSettings().snapshots_dir == Path("_system/episteme/snapshots")
 
     @pytest.mark.parametrize("folder", ["/abs/folder", "..", "../outside", "a/../../b"])
     def test_a_folder_outside_the_vault_is_rejected(self, folder: str):
@@ -378,7 +378,8 @@ class TestMigrationFiveOnAnExistingDatabase:
         real = Path(str(DuckDBEngine(":memory:").sql_dir))
         old_sql = tmp_path / "sql"
         shutil.copytree(real, old_sql)
-        (old_sql / "migrations" / "V5__add_body_hash.sql").unlink()          # the schema before this change
+        for later in ("V5__add_body_hash.sql", "V6__create_tasks.sql", "V7__create_task_views.sql"):
+            (old_sql / "migrations" / later).unlink()                          # the schema before body_hash
 
         class OldEngine(DuckDBEngine):
             @property
@@ -393,7 +394,7 @@ class TestMigrationFiveOnAnExistingDatabase:
         engine.close()
 
         with Database(DataSettings(url=str(url))) as database:
-            assert [m.version for m in database.migrations.applied()][-1] == "5"
+            assert [m.version for m in database.migrations.applied()][4] == "5"
             assert database.engine.fetch_all("SELECT path, body_hash FROM notes") == [{"path": "a.md", "body_hash": None}]
             assert "body_hash" in {r["column_name"] for r in database.engine.fetch_all("SELECT column_name FROM information_schema.columns WHERE table_name = 'vault_notes'")}
             assert database.engine.fetch_all("SELECT name FROM evergreen_notes") == [{"name": "a"}]
