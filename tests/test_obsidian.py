@@ -1,7 +1,7 @@
 import logging
 import os
 import time
-from datetime import datetime
+from datetime import date, datetime
 from pathlib import Path
 
 import pytest
@@ -157,6 +157,36 @@ class TestParseYaml:
 
     def test_template_placeholders_are_quoted(self, note: MarkdownNote):
         assert note.parse_yaml("title: {{title}}") == {"title": "{{title}}"}
+
+    @pytest.mark.parametrize("value", ["12:00", "07:05", "1:30:45", "0:30", "-1:30"])
+    def test_times_stay_text(self, note: MarkdownNote, value: str):
+        assert note.parse_yaml(f"t: {value}") == {"t": value}
+
+    def test_time_float_form_stays_text(self, note: MarkdownNote):
+        assert note.parse_yaml("t: 1:30.5") == {"t": "1:30.5"}
+
+    def test_regular_scalars_still_typed(self, note: MarkdownNote):
+        parsed = note.parse_yaml(
+            "i: 12\nneg: -3\nhex: 0x1F\nf: 1.5\nexp: 1.0e+3\nb: true\nn: null\nd: 2027-01-02\ns: text"
+        )
+        assert parsed == {
+            "i": 12, "neg": -3, "hex": 31, "f": 1.5, "exp": 1000.0,
+            "b": True, "n": None, "d": date(2027, 1, 2), "s": "text",
+        }
+
+    def test_inf_and_nan_still_floats(self, note: MarkdownNote):
+        parsed = note.parse_yaml("a: .inf\nb: -.inf\nc: .nan")
+        assert parsed["a"] == float("inf")
+        assert parsed["b"] == float("-inf")
+        assert parsed["c"] != parsed["c"]
+
+    def test_quoted_time_is_text(self, note: MarkdownNote):
+        assert note.parse_yaml("t: '12:00'") == {"t": "12:00"}
+
+    def test_default_safe_loader_is_not_affected(self):
+        import yaml
+
+        assert yaml.safe_load("t: 12:00") == {"t": 720}
 
     def test_invalid_yaml_returns_empty_and_logs(
         self, note: MarkdownNote, caplog: pytest.LogCaptureFixture

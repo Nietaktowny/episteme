@@ -1,6 +1,7 @@
 """Pydantic models describing an Obsidian vault and its notes."""
 
 import logging
+import re
 from functools import cached_property
 from pathlib import Path
 from datetime import datetime
@@ -16,6 +17,47 @@ from rich.table import Table
 from rich.tree import Tree
 
 logger = logging.getLogger("episteme")
+
+
+class _FrontmatterLoader(yaml.SafeLoader):
+    """Safe YAML loader that, like Obsidian, does not read ``12:00`` as a number.
+
+    PyYAML follows YAML 1.1, where ``12:00`` is a base-60 integer (``720``) and
+    ``1:30.5`` a base-60 float. Obsidian treats such values as text, so those
+    forms are dropped; everything else resolves as in :func:`yaml.safe_load`.
+    """
+
+
+_FrontmatterLoader.yaml_implicit_resolvers = {
+    first_char: [
+        (tag, regexp)
+        for tag, regexp in resolvers
+        if tag not in ("tag:yaml.org,2002:int", "tag:yaml.org,2002:float")
+    ]
+    for first_char, resolvers in yaml.SafeLoader.yaml_implicit_resolvers.items()
+}
+_FrontmatterLoader.add_implicit_resolver(
+    "tag:yaml.org,2002:int",
+    re.compile(
+        r"""^(?:[-+]?0b[0-1_]+
+        |[-+]?0[0-7_]+
+        |[-+]?(?:0|[1-9][0-9_]*)
+        |[-+]?0x[0-9a-fA-F_]+)$""",
+        re.X,
+    ),
+    list("-+0123456789"),
+)
+_FrontmatterLoader.add_implicit_resolver(
+    "tag:yaml.org,2002:float",
+    re.compile(
+        r"""^(?:[-+]?(?:[0-9][0-9_]*)\.[0-9_]*(?:[eE][-+][0-9]+)?
+        |\.[0-9][0-9_]*(?:[eE][-+][0-9]+)?
+        |[-+]?\.(?:inf|Inf|INF)
+        |\.(?:nan|NaN|NAN))$""",
+        re.X,
+    ),
+    list("-+0123456789."),
+)
 
 class CategoryDirectory(StrEnum):
     """Top-level vault directories used to categorize notes.
@@ -91,12 +133,15 @@ class MarkdownNote(BaseModel):
     is_archived: bool = Field(default=False, description="Whether note is archived")
     archived_at: datetime | None = Field(default=None, description="If note is archived, it tells approximate time when it was archived.")
     category_directory: CategoryDirectory = Field(default=CategoryDirectory.INBOX, description="Category directory where the note is stored")
+    size: int = Field(default=0, description="Size of the note in bytes.")
 
     @cached_property
     def content(self) -> str:
         """Full note content, read from the filesystem on first access."""
         with open(self.path, "r", encoding="utf-8") as f:
-            return f.read()
+            content = f.read()
+            self.size = len(content)
+            return content
 
     def parse_yaml(self, yaml_content: str) -> dict[str, Any]:
         r"""Parse YAML text into a dictionary.
@@ -122,10 +167,15 @@ class MarkdownNote(BaseModel):
             {}
             >>> note.parse_yaml("key: [unclosed")
             {}
+
+        Times are text, as in Obsidian, not base-60 numbers:
+
+            >>> note.parse_yaml("started: 12:00\nn: 12")
+            {'started': '12:00', 'n': 12}
         """
         yaml_content = yaml_content.strip().replace("{{", '"{{').replace("}}", '}}"')
         try:
-            return yaml.safe_load(yaml_content) or {}
+            return yaml.load(yaml_content, Loader=_FrontmatterLoader) or {}
         except yaml.YAMLError as e:
             logger.error(f"Error parsing YAML frontmatter: {e}")
             return {}
@@ -180,6 +230,7 @@ class MarkdownNote(BaseModel):
         grid.add_row("category", f"[cyan]{self.category_directory.value}[/]")
         grid.add_row("created", f"{self.created_at:%Y-%m-%d %H:%M}")
         grid.add_row("updated", f"{self.updated_at:%Y-%m-%d %H:%M}")
+        grid.add_row("size", f"{self.size} bytes")
         if "content" in self.__dict__:
             grid.add_row(
                 "content",
@@ -229,6 +280,7 @@ class MarkdownNote(BaseModel):
             f"{self.name} [{self.category_directory.value}, {status}]",
             f"  created:  {self.created_at:%Y-%m-%d %H:%M}",
             f"  updated:  {self.updated_at:%Y-%m-%d %H:%M}",
+            f"  size:     {self.size} bytes"
         ]
         if "content" in self.__dict__:
             lines.append(f"  content:  {len(self.content)} chars, {len(self.content.splitlines())} lines")

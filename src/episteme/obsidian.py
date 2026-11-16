@@ -297,7 +297,8 @@ class ObsidianVault:
             path=note_path,
             category_directory=self._get_category_directory(note_path),
             created_at=datetime.fromtimestamp(stat.st_ctime),
-            updated_at=datetime.fromtimestamp(stat.st_mtime)
+            updated_at=datetime.fromtimestamp(stat.st_mtime),
+            size=stat.st_size
         )
 
     def _map_subdirectory(self, dir_path: Path) -> VaultDirectory:
