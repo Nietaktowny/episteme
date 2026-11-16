@@ -99,6 +99,7 @@ class Episteme:
             (1, 0, True)
         """
         self.obsidian.map()
+        self.obsidian.detect_templates()      # which template (and version) each note was created from
         tasks = self.obsidian.scan_for_tasks(require_id=True)  # only tasks with an id written in their note are stored
         result = self.data.sync_notes(self.obsidian, tasks)
         return result.model_copy(update={"mapping_seconds": self.obsidian.statistics.mapping_duration or 0.0})

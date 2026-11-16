@@ -17,6 +17,7 @@ class ObsidianSettings(BaseModel):
     Attributes:
         vault_root: Path to the root of the Obsidian vault.
         skip_dirs: Names of directories skipped when mapping the vault.
+        template_by_type: Template of each note ``type`` whose template is not called ``<type>_template``.
         snapshots_dir: Folder for database snapshots, relative to the vault root. It lives inside
             the vault so that snapshots travel with it.
 
@@ -37,6 +38,11 @@ class ObsidianSettings(BaseModel):
 
     vault_root: Path = Field(Path("."), description="Path to root of Obsidian vault")
     skip_dirs: list[str] = Field(default_factory=lambda: [".obsidian", "_lib"], description="List of directories names to skip when mapping the vault")
+    template_by_type: dict[str, str] = Field(
+        default_factory=dict,
+        description="Template name of a note type, for the types whose template is not called '<type>_template' "
+                    "(e.g. {'meeting': 'meeting_input_template'})",
+    )
     snapshots_dir: Path = Field(Path("_system/episteme/snapshots"), description="Folder for database snapshots, relative to the vault root")
 
     @field_validator("snapshots_dir")

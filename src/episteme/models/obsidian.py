@@ -9,7 +9,7 @@ import unicodedata
 from functools import cached_property
 from pathlib import Path, PurePosixPath
 from datetime import date, datetime, time, timedelta
-from collections.abc import Iterator
+from collections.abc import Collection, Iterator, Mapping
 from typing import Any, Literal, Self
 from enum import StrEnum, auto
 
@@ -269,6 +269,59 @@ class MarkdownNote(_VaultLocated):
             if end_index != -1:
                 return content[3:end_index].strip(), content[end_index + 3:].removeprefix("\n")
         return "", content
+
+    @staticmethod
+    def parse_template_version(value: Any) -> float | None:
+        """Read a ``template_version`` property: ``1.3``, ``2`` and ``"1.1"`` are versions, anything else is not.
+
+        Examples:
+            >>> [MarkdownNote.parse_template_version(v) for v in (1.3, 2, "1.1", "1", "1.1.0", "x", True, None)]
+            [1.3, 2.0, 1.1, 1.0, None, None, None, None]
+        """
+        if isinstance(value, bool):
+            return None
+        if isinstance(value, (int, float)):
+            return float(value)
+        if isinstance(value, str) and re.fullmatch(r"\d+(\.\d+)?", value.strip()):
+            return float(value)
+        return None
+
+    def detect_template(
+        self, template_names: Collection[str] = (), template_by_type: Mapping[str, str] | None = None,
+    ) -> Self:
+        r"""Fill ``template`` and ``template_version`` from the note's frontmatter.
+
+        The version is the ``template_version`` property, which a managed template writes into the notes it
+        creates. The notes do not say *which* template that was, so its name is taken from the note's ``type``:
+        ``<type>_template`` (or what ``template_by_type`` says for that type), if such a template exists
+        in ``template_names``. A note without a ``template_version`` was not created from a template and has
+        neither. Both fields are set every time, so they follow the frontmatter.
+
+        Args:
+            template_names: Names of the templates of the vault (without the ``v1.0_`` version prefix).
+            template_by_type: Template name for the types that do not follow ``<type>_template``.
+
+        Examples:
+            >>> import tempfile
+            >>> with tempfile.TemporaryDirectory() as tmp:
+            ...     file = Path(tmp) / "a.md"
+            ...     _ = file.write_text("---\ntype: evergreen\ntemplate_version: 1.3\n---\nBody")
+            ...     note = MarkdownNote(name="a", path="a.md", absolute_path=file)
+            ...     _ = note.detect_template({"evergreen_template"})
+            ...     note.template, note.template_version
+            ...     _ = note.detect_template()            # no templates known: only the version
+            ...     note.template, note.template_version
+            ('evergreen_template', 1.3)
+            (None, 1.3)
+        """
+        self.template_version = self.parse_template_version(self.frontmatter.get("template_version"))
+        self.template = None
+        note_type = self.frontmatter.get("type")
+        if self.template_version is not None and isinstance(note_type, str):
+            name = (template_by_type or {}).get(note_type, f"{note_type}_template")
+            if name in template_names:
+                self.template = name
+        return self
 
     @cached_property
     def body(self) -> str:

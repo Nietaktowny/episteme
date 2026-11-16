@@ -44,6 +44,7 @@ nav:
   - Database views: views.md
   - Snapshots: snapshots.md
   - Tasks: tasks.md
+  - Templates: templates.md
   - API reference:
       - episteme: reference/episteme.md
       - episteme.obsidian: reference/obsidian.md

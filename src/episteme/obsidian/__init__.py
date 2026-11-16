@@ -605,6 +605,70 @@ class ObsidianVault:
                     logger.warning(f"Invalid template version format in note '{note.name}'.")
         return max(versions) if versions else None
 
+    def template_names(self) -> set[str]:
+        r"""Names of the vault's templates: the files of the templates folder without their ``v1.0_`` prefix.
+
+        Returns:
+            The names, or an empty set if the vault has no templates folder.
+
+        Examples:
+            >>> import tempfile
+            >>> from episteme.cli import ObsidianSettings
+            >>> with tempfile.TemporaryDirectory() as tmp:
+            ...     root = Path(tmp)
+            ...     (root / "99_Templates").mkdir()
+            ...     for name in ("v1.0_daily_template.md", "v1.2_daily_template.md", "v2.0_lane_template.md"):
+            ...         _ = (root / "99_Templates" / name).write_text("")
+            ...     sorted(ObsidianVault(ObsidianSettings(vault_root=root)).template_names())
+            ['daily_template', 'lane_template']
+        """
+        try:
+            directory = self.get_category_dir(CategoryDirectory.TEMPLATES)
+        except FileNotFoundError:
+            return set()
+        return {re.sub(r"^v\d+(?:\.\d+)*_", "", note.name) for note in directory.iter_notes()}
+
+    def detect_templates(self) -> int:
+        r"""Fill ``template`` and ``template_version`` of every note from its frontmatter.
+
+        See :meth:`MarkdownNote.detect_template`. The templates themselves are not notes created from a
+        template, so they get neither. This reads the frontmatter of every note, so the mapping stays lazy
+        and it is done by :meth:`episteme.Episteme.sync_obsidian`, which reads them anyway. A note that cannot
+        be read is logged and skipped.
+
+        Returns:
+            How many notes were created from a template (have a ``template_version``).
+
+        Examples:
+            >>> import tempfile
+            >>> from episteme.cli import ObsidianSettings
+            >>> with tempfile.TemporaryDirectory() as tmp:
+            ...     root = Path(tmp)
+            ...     (root / "99_Templates").mkdir()
+            ...     _ = (root / "99_Templates" / "v1.3_evergreen_template.md").write_text("---\ntype: evergreen\ntemplate_version: 1.3\n---\n")
+            ...     _ = (root / "idea.md").write_text("---\ntype: evergreen\ntemplate_version: 1.3\n---\nText")
+            ...     _ = (root / "plain.md").write_text("Text")
+            ...     vault = ObsidianVault(ObsidianSettings(vault_root=root))
+            ...     vault.detect_templates()
+            ...     (vault["idea"].template, vault["idea"].template_version, vault["plain"].template)
+            1
+            ('evergreen_template', 1.3, None)
+        """
+        names = self.template_names()
+        by_type = self.settings.template_by_type
+        detected = 0
+        for note in self:
+            if note.category_directory is CategoryDirectory.TEMPLATES:
+                note.template = note.template_version = None
+                continue
+            try:
+                note.detect_template(names, by_type)
+            except (OSError, UnicodeDecodeError) as error:
+                logger.warning(f"Cannot read the template of note '{note.path}': {error}")
+                continue
+            detected += note.template_version is not None
+        return detected
+
     def _resolve_placeholders(self, content: str, title: str | None = None) -> str:
         r"""Replace supported Obsidian template placeholders with their values.
 
@@ -708,6 +772,8 @@ class ObsidianVault:
             new_note_file.write(content)
 
         new_markdown_note = self._build_markdown_note(new_note_path)
+        new_markdown_note.template = template_name
+        new_markdown_note.template_version = template_version
         parent = self.root.get_dir(self._relative(target_dir))
         if parent is None:
             # The directory exists on disk but is not mapped yet; map again to pick it up.
@@ -715,6 +781,8 @@ class ObsidianVault:
             parent = self.root.get_dir(self._relative(target_dir))
             if parent is not None:
                 new_markdown_note = parent[new_note_name]
+                new_markdown_note.template = template_name
+                new_markdown_note.template_version = template_version
         if parent is not None and new_markdown_note not in parent.notes:
             parent.notes.append(new_markdown_note)
         elif parent is None:
