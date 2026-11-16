@@ -15,18 +15,12 @@ class ObsidianSettings(BaseModel):
 
     Attributes:
         vault_root: Path to the root of the Obsidian vault.
-        system_dir: Path to the system directory, relative to the vault root.
-        templates_dir: Path to the templates directory, relative to the vault root.
         skip_dirs: Names of directories skipped when mapping the vault.
 
     Examples:
         >>> settings = ObsidianSettings()
         >>> settings.vault_root
         PosixPath('.')
-        >>> settings.system_dir
-        PosixPath('_system')
-        >>> settings.templates_dir
-        PosixPath('99_Templates')
         >>> settings.skip_dirs
         ['.obsidian']
 
@@ -37,8 +31,6 @@ class ObsidianSettings(BaseModel):
     """
 
     vault_root: Path = Field(Path("."), description="Path to root of Obsidian vault")
-    system_dir: Path = Field(Path("_system"), description="Path to system directory relative from vault root")
-    templates_dir: Path = Field(Path("99_Templates"), description="Path to templates directory relative from vault root")
     skip_dirs: list[str] = Field(default_factory=lambda: [".obsidian"], description="List of directories names to skip when mapping the vault")
 
 class EpistemeSettings(BaseSettings):
