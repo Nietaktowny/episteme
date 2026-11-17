@@ -75,7 +75,8 @@ def run(ctx: typer.Context, sync: Sync = None, sync_obsidian: SyncObsidian = Non
     \b
     episteme schedule run --sync "0 6 * * *" --snapshot "0 22 * * 0"
     episteme schedule run --sync-obsidian "*/30 * * * *" --sync-anki "0 */6 * * *" --snapshot @weekly
-    episteme schedule run          # schedules from SCHEDULER__SYNC_CRON / SCHEDULER__SNAPSHOT_CRON
+    episteme schedule run --sync "*/15 * * * *" --health "0 * * * *"      # a sync and, on its own, the health check
+    episteme schedule run          # schedules from SCHEDULER__*_CRON (SYNC, SYNC_OBSIDIAN, SYNC_ANKI, HEALTH, SNAPSHOT)
     """
     state = state_of(ctx)
     episteme = state.episteme
@@ -86,7 +87,7 @@ def run(ctx: typer.Context, sync: Sync = None, sync_obsidian: SyncObsidian = Non
     except ValueError as error:
         raise fail(str(error)) from None
     if not plan:
-        raise fail("No job has a schedule. Give --sync, --sync-obsidian, --sync-anki and/or --snapshot, or set SCHEDULER__*_CRON (see `episteme config init`).")
+        raise fail("No job has a schedule. Give --sync, --sync-obsidian, --sync-anki, --health and/or --snapshot, or set SCHEDULER__*_CRON in your .env (see `episteme config init`).")
     for name, (function, expression) in plan.items():
         episteme.scheduler.add_cron(function, expression, id=name, name=name)
     console.print(table("Scheduled jobs", ["Job", "Cron", "Next run"], [[name, expression, _next_run(expression)] for name, (_, expression) in plan.items()]))
