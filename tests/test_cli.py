@@ -449,3 +449,53 @@ class TestTables:
         assert set(_STYLE) == {"error", "warn", "info"}
         shown = self.ansi(table("alerts", ["Severity"], [[Text(severity, style=style)] for severity, style in _STYLE.items()]))
         assert "[red]" not in shown and "[yellow]" not in shown and "[cyan]" not in shown
+
+
+class TestScheduledJobsSayWhatTheyDid:
+    """A job that works used to be silent: the scheduler logs only problems."""
+
+    @staticmethod
+    def said(function) -> str:
+        from io import StringIO
+
+        from rich.console import Console
+
+        from episteme.cli.commands import schedule
+
+        out, err = Console(file=StringIO(), width=200, color_system=None), Console(file=StringIO(), width=200, color_system=None)
+        original = schedule.console, schedule.errors
+        schedule.console, schedule.errors = out, err
+        try:
+            function()
+        finally:
+            schedule.console, schedule.errors = original
+        return out.file.getvalue() + err.file.getvalue()
+
+    def test_a_run_prints_its_time_its_name_and_what_it_did(self):
+        from datetime import datetime
+
+        from episteme.cli.commands.schedule import reported
+        from episteme.models.health import HealthResult
+
+        result = HealthResult(run_id="r", checked_at=datetime(2026, 1, 1), findings=5, opened=1, resolved=2, alerts={"error": 1})
+        shown = self.said(reported("health", lambda: result))
+        assert "health" in shown and "5 found, 1 opened, 2 resolved, 1 open alert(s)" in shown and shown.strip()[:4] == str(datetime.now().year)
+
+    def test_a_failing_job_is_reported_and_does_not_raise(self):
+        from episteme.cli.commands.schedule import reported
+
+        def broken():
+            raise RuntimeError("disk full")
+
+        assert "sync failed: RuntimeError: disk full" in self.said(reported("sync", broken))
+
+    def test_what_a_job_returns_is_summarised(self, env):
+        from episteme.cli.commands.schedule import summary
+        from episteme.cli.state import CliState  # noqa: F401 - the real results come from a real sync below
+        from episteme import Episteme
+        from episteme.settings import EpistemeSettings
+
+        episteme = Episteme(EpistemeSettings(_env_file=env[1]))
+        assert summary(episteme.sync()).endswith("change(s)")
+        assert "found" in summary(episteme.check_health())
+        assert summary(None) == "done"

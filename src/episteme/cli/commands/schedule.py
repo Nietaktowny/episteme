@@ -9,7 +9,7 @@ import typer
 from apscheduler.triggers.cron import CronTrigger
 
 from episteme import Episteme
-from episteme.cli.output import console, emit, fail, table
+from episteme.cli.output import console, emit, errors, fail, table
 from episteme.cli.registry import Extension
 from episteme.cli.state import state_of
 from episteme.scheduler import parse_cron
@@ -48,6 +48,50 @@ def jobs_of(episteme: Episteme) -> dict[str, tuple]:
         "snapshot": (lambda: episteme.snapshot(overwrite=True), settings.snapshot_cron),
     }
     return {name: (serialized(function), cron) for name, (function, cron) in jobs.items()}
+
+
+def summary(result: object) -> str:
+    """One line that says what a job did, whatever it returned.
+
+    Examples:
+        >>> from episteme.models.health import HealthResult
+        >>> from datetime import datetime
+        >>> summary(HealthResult(run_id="r", checked_at=datetime(2026, 1, 1), findings=5, opened=1, resolved=2, alerts={"error": 1}))
+        '5 found, 1 opened, 2 resolved, 1 open alert(s)'
+        >>> summary(None)
+        'done'
+    """
+    if result is None:
+        return "done"
+    if hasattr(result, "alert_count"):                       # a health check
+        sent = f", sent {result.delivered}" + (f" ({result.delivery_failed} failed)" if result.delivery_failed else "") if result.delivered or result.delivery_failed else ""
+        return f"{result.findings} found, {result.opened} opened, {result.resolved} resolved, {result.alert_count} open alert(s){sent}"
+    if hasattr(result, "failed"):                            # a sync of every system
+        return (f"{result.changed} change(s)" if result.ok else f"failed: {', '.join(result.failed)}")
+    if hasattr(result, "ok") and hasattr(result, "changed"):  # a sync of one system
+        return f"{result.changed} change(s)" if result.ok else f"failed: {getattr(result.error, 'message', result.error)}"
+    if hasattr(result, "notes") and hasattr(result, "path"):  # a snapshot
+        return f"{result.notes} note(s) in {result.path.name}"
+    return str(result)[:100]
+
+
+def reported(name: str, function):
+    """Wrap a job so that every run says, on one line, that it ran and what it did (or what went wrong).
+
+    The scheduler runs jobs in the background and logs only problems; without this a job that works is silent.
+    A job that raises is reported and does not stop the scheduler.
+    """
+    @functools.wraps(function)
+    def run_and_say():
+        started = datetime.now()
+        try:
+            result = function()
+        except Exception as error:
+            errors.print(f"{started:%Y-%m-%d %H:%M:%S}  [bold red]{name} failed:[/] {type(error).__name__}: {error}", markup=True, highlight=False)
+            return None
+        console.print(f"{started:%Y-%m-%d %H:%M:%S}  [bold]{name}[/]  {summary(result)}  [dim]({(datetime.now() - started).total_seconds():.1f} s)[/]", highlight=False)
+        return result
+    return run_and_say
 
 
 def _plan(episteme: Episteme, **given: str | None) -> dict[str, tuple]:
@@ -89,7 +133,7 @@ def run(ctx: typer.Context, sync: Sync = None, sync_obsidian: SyncObsidian = Non
     if not plan:
         raise fail("No job has a schedule. Give --sync, --sync-obsidian, --sync-anki, --health and/or --snapshot, or set SCHEDULER__*_CRON in your .env (see `episteme config init`).")
     for name, (function, expression) in plan.items():
-        episteme.scheduler.add_cron(function, expression, id=name, name=name)
+        episteme.scheduler.add_cron(reported(name, function), expression, id=name, name=name)
     console.print(table("Scheduled jobs", ["Job", "Cron", "Next run"], [[name, expression, _next_run(expression)] for name, (_, expression) in plan.items()]))
     console.print("Scheduler running. Ctrl+C to stop.")
     try:
