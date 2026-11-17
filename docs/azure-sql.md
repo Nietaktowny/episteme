@@ -32,7 +32,7 @@ escapes, and it is hidden wherever Episteme shows the URL). Connections are encr
 certificate is checked, as Azure SQL requires. For a local server with a self-signed certificate add
 `?encrypt=no&trust_server_certificate=yes`.
 
-The tables and views are created by the same migrations as everywhere (`schema_history` table, versions `V1` to `V9`), written in T-SQL. Nothing needs to be
+The tables and views are created by the same migrations as everywhere (`schema_history` table, versions `V1` to `V10`), written in T-SQL. Nothing needs to be
 prepared: starting from an empty database, the first connection creates every table, view and function.
 
 ## Creating the database

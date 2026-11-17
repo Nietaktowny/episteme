@@ -70,7 +70,7 @@ class Overview(BaseModel):
     """What the database holds, one section per system.
 
     Examples:
-        >>> overview = Overview(database=DatabaseOverview(engine="duckdb", url=":memory:", schema_version="9"))
+        >>> overview = Overview(database=DatabaseOverview(engine="duckdb", url=":memory:", schema_version="10"))
         >>> [panel.title for panel in overview.panels()]
         ['[bold]Obsidian[/]', '[bold]Anki[/]', '[bold]Database[/]']
     """

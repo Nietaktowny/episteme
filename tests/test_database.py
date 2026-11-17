@@ -13,6 +13,7 @@ ANKI_TABLES = {"anki_collection", "anki_decks", "anki_deck_options", "anki_notes
 EXPECTED_TABLES = {"notes", "schema_history", "tasks"} | ANKI_TABLES
 EXPECTED_INDEXES = {
     "idx_notes_name",
+    "idx_notes_type",
     "idx_notes_category_directory",
     "idx_notes_created_at",
     "idx_notes_updated_at",
@@ -202,13 +203,15 @@ class TestLifecycle:
 class TestNotesTable:
     def test_columns_mirror_markdown_note(self, database: Database):
         # Every stored model field has a column; where the file is on this machine is not stored.
-        stored_fields = set(MarkdownNote.model_fields) - {"absolute_path"}
+        # inferred_type and forced_type are only the folder's say in what type is: the type itself is stored.
+        stored_fields = set(MarkdownNote.model_fields) - {"absolute_path", "inferred_type", "forced_type"}
         assert stored_fields <= columns(database, "notes")
-        assert columns(database, "notes") - stored_fields == {"frontmatter", "body_hash"}
+        assert columns(database, "notes") - stored_fields == {"frontmatter", "body_hash", "type", "created"}
         assert "absolute_path" not in columns(database, "notes")
 
-    def test_no_frontmatter_property_is_a_column(self, database: Database):
-        assert not {"type", "created", "domain", "status", "tags"} & columns(database, "notes")
+    def test_only_type_and_created_are_properties_with_a_column(self, database: Database):
+        assert not {"domain", "status", "tags"} & columns(database, "notes")
+        assert {"type", "created"} <= columns(database, "notes")
 
     def test_defaults(self, database: Database):
         insert_note(database)

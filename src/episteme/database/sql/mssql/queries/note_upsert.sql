@@ -11,7 +11,9 @@ USING (SELECT
     CAST($is_archived AS BIT)                  AS is_archived,
     CAST($archived_at AS DATETIME2(6))         AS archived_at,
     CAST($frontmatter AS NVARCHAR(MAX))        AS frontmatter,
-    CAST($body_hash AS NVARCHAR(100))          AS body_hash
+    CAST($body_hash AS NVARCHAR(100))          AS body_hash,
+    CAST($type AS NVARCHAR(100))               AS type,
+    CAST($created AS DATE)                     AS created
 ) AS source ON target.path = source.path
 WHEN MATCHED THEN UPDATE SET
     name = source.name,
@@ -24,11 +26,13 @@ WHEN MATCHED THEN UPDATE SET
     is_archived = source.is_archived,
     archived_at = source.archived_at,
     frontmatter = source.frontmatter,
-    body_hash = source.body_hash
+    body_hash = source.body_hash,
+    type = source.type,
+    created = source.created
 WHEN NOT MATCHED THEN INSERT (
     path, name, category_directory, size, created_at, updated_at,
-    template, template_version, is_archived, archived_at, frontmatter, body_hash
+    template, template_version, is_archived, archived_at, frontmatter, body_hash, type, created
 ) VALUES (
     source.path, source.name, source.category_directory, source.size, source.created_at, source.updated_at,
-    source.template, source.template_version, source.is_archived, source.archived_at, source.frontmatter, source.body_hash
+    source.template, source.template_version, source.is_archived, source.archived_at, source.frontmatter, source.body_hash, source.type, source.created
 );

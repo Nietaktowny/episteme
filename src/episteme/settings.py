@@ -14,6 +14,38 @@ from zoneinfo import ZoneInfo, ZoneInfoNotFoundError
 from pydantic_settings import BaseSettings, SettingsConfigDict
 from pydantic import ConfigDict, Field, BaseModel, SecretStr, field_validator
 
+DEFAULT_TYPE_BY_FOLDER = {
+    "10_Projects": "project",
+    "10_Projects/Learning roadmaps": "roadmap",
+    "20_Lanes": "lane",
+    "30_Resources/Evergreen": "evergreen",
+    "30_Resources/Sources": "source",
+    "00_Inbox/daily_log": "daily_note",
+    "00_Inbox/weekly_review": "weekly_review",
+}
+"""Where the notes of each type live in the PKM: what a note without a ``type`` is taken to be."""
+
+DEFAULT_FORCED_TYPE_BY_FOLDER = {
+    "99_Templates": "template",
+    "40_Archive/Archived Templates": "template",
+}
+"""Folders whose notes are of one type whatever they write: a template says ``type: evergreen`` because notes made from
+it will, but it is a template."""
+
+
+def _folder_rules(rules: dict[str, str], setting: str) -> dict[str, str]:
+    """Check folder-to-type rules and write the folders in one form (relative, forward slashes, no slash around)."""
+    cleaned = {}
+    for folder, kind in rules.items():
+        path = Path(folder.strip().strip("/"))
+        if not folder.strip("/ ") or path.is_absolute() or ".." in path.parts:
+            raise ValueError(f"{setting}: '{folder}' must be a folder inside the vault, relative to its root.")
+        if not kind.strip():
+            raise ValueError(f"{setting}: the type of '{folder}' is empty.")
+        cleaned[path.as_posix()] = kind.strip()
+    return cleaned
+
+
 class ObsidianSettings(BaseModel):
     """Settings describing the Obsidian vault Episteme works on.
 
@@ -23,6 +55,12 @@ class ObsidianSettings(BaseModel):
         template_by_type: Template of each note ``type`` whose template is not called ``<type>_template``.
         snapshots_dir: Folder for database snapshots, relative to the vault root. It lives inside
             the vault so that snapshots travel with it.
+        type_by_folder: The ``type`` of the notes of a folder (and its subfolders) that do not write one in their
+            frontmatter, so that even a zero-byte placeholder has a type. The longest matching folder wins, and a
+            ``type`` written in a note wins over these (but see ``forced_type_by_folder``).
+        forced_type_by_folder: The ``type`` of the notes of a folder (and its subfolders) *whatever they write*: the
+            templates, which carry the ``type`` of the notes made from them but are templates. It wins over what a
+            note writes and over ``type_by_folder``; the longest matching folder wins.
 
     Examples:
         >>> settings = ObsidianSettings()
@@ -32,6 +70,10 @@ class ObsidianSettings(BaseModel):
         ['.obsidian', '_lib']
         >>> settings.snapshots_dir
         PosixPath('_system/episteme/snapshots')
+        >>> settings.type_by_folder["30_Resources/Evergreen"]
+        'evergreen'
+        >>> settings.forced_type_by_folder["99_Templates"]
+        'template'
 
         Values passed as strings are coerced to ``Path``:
 
@@ -47,6 +89,14 @@ class ObsidianSettings(BaseModel):
                     "(e.g. {'meeting': 'meeting_input_template'})",
     )
     snapshots_dir: Path = Field(Path("_system/episteme/snapshots"), description="Folder for database snapshots, relative to the vault root")
+    type_by_folder: dict[str, str] = Field(
+        default_factory=lambda: dict(DEFAULT_TYPE_BY_FOLDER),
+        description="Type of the notes of a folder that write none in their frontmatter (longest folder wins; a written type wins over it)",
+    )
+    forced_type_by_folder: dict[str, str] = Field(
+        default_factory=lambda: dict(DEFAULT_FORCED_TYPE_BY_FOLDER),
+        description="Type of the notes of a folder whatever they write (the templates: they write the type of the notes made from them)",
+    )
 
     @field_validator("snapshots_dir")
     @classmethod
@@ -54,6 +104,16 @@ class ObsidianSettings(BaseModel):
         if folder.is_absolute() or ".." in folder.parts:
             raise ValueError(f"snapshots_dir '{folder}' must be a folder inside the vault, relative to its root.")
         return folder
+
+    @field_validator("type_by_folder")
+    @classmethod
+    def _type_rules(cls, rules: dict[str, str]) -> dict[str, str]:
+        return _folder_rules(rules, "type_by_folder")
+
+    @field_validator("forced_type_by_folder")
+    @classmethod
+    def _forced_type_rules(cls, rules: dict[str, str]) -> dict[str, str]:
+        return _folder_rules(rules, "forced_type_by_folder")
 
 class AnkiSettings(BaseModel):
     """Settings describing the Anki collection Episteme reads statistics from.

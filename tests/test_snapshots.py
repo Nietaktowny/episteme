@@ -93,7 +93,7 @@ class TestDatabaseSnapshot:
     def test_placeholders_and_untyped_notes_are_included(self, database: Database, tmp_path: Path):
         database.snapshot(tmp_path / "notes.parquet")
         rows = {row["name"]: row for row in read(database, tmp_path / "notes.parquet")}
-        assert rows["TODO"]["is_empty"] is True and rows["TODO"]["type"] is None
+        assert rows["TODO"]["is_empty"] is True and rows["TODO"]["type"] == "evergreen"  # the folder says what an empty note is
         assert rows["capture"]["type"] is None and json.loads(rows["capture"]["frontmatter"]) == {}
 
     def test_unicode_names_are_kept(self, database: Database, tmp_path: Path):
@@ -378,7 +378,7 @@ class TestMigrationFiveOnAnExistingDatabase:
         real = Path(str(DuckDBEngine(":memory:").sql_dir))
         old_sql = tmp_path / "sql"
         shutil.copytree(real, old_sql)
-        for later in ("V5__add_body_hash.sql", "V6__create_tasks.sql", "V7__create_task_views.sql", "V8__create_anki.sql", "V9__create_anki_views.sql"):
+        for later in ("V5__add_body_hash.sql", "V6__create_tasks.sql", "V7__create_task_views.sql", "V8__create_anki.sql", "V9__create_anki_views.sql", "V10__notes_type_and_created.sql"):
             (old_sql / "migrations" / later).unlink()                          # the schema before body_hash
 
         class OldEngine(DuckDBEngine):

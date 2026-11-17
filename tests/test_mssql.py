@@ -326,7 +326,7 @@ def settings_for(url: str, **kwargs) -> DataSettings:
 class TestAgainstAServer:
     def test_a_missing_database_is_created_and_migrated_from_scratch(self, mssql_url: str):
         with Database(settings_for(mssql_url)) as database:
-            assert database.schema_version == "9"
+            assert database.schema_version == "10"
             assert {"notes", "tasks", "anki_cards", "schema_history"} <= set(database.tables())
 
     def test_a_second_open_changes_nothing(self, mssql_url: str):
@@ -627,7 +627,7 @@ class TestSchemas:
         with Database(settings_for(mssql_url)) as database:  # the default schema
             tables = database.engine.fetch_all("SELECT TABLE_SCHEMA AS s FROM INFORMATION_SCHEMA.TABLES")
             assert {row["s"] for row in tables} == {"episteme"}
-            assert database.schema_version == "9" and "notes" in database.tables()
+            assert database.schema_version == "10" and "notes" in database.tables()
             assert len(database.views()) == 28 and all(database.views().values())
 
     def test_two_schemas_do_not_see_each_other(self, mssql_url: str, tmp_path: Path):

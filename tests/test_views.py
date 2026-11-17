@@ -188,7 +188,7 @@ class TestVaultNotes:
 
 class TestEvergreen:
     def test_only_evergreen_notes(self, world: Database):
-        assert set(names(world, "SELECT name FROM evergreen_notes")) == {"Attention", "Stale", "Current", "Bad Domain"}
+        assert set(names(world, "SELECT name FROM evergreen_notes WHERE NOT is_empty")) == {"Attention", "Stale", "Current", "Bad Domain"}
 
     def test_domain_and_ankified_date(self, world: Database):
         got = {r["name"]: (r["domain"], r["ankified_date"]) for r in rows(world, "SELECT name, domain, ankified_date FROM evergreen_notes")}
@@ -202,14 +202,15 @@ class TestEvergreen:
     def test_placeholders_are_zero_byte_notes_in_the_evergreen_folder(self, world: Database):
         assert names(world, "SELECT name FROM evergreen_placeholders") == ["TODO placeholder"]
 
-    def test_placeholders_have_no_type(self, world: Database):
-        assert rows(world, "SELECT type FROM evergreen_placeholders") == [{"type": None}]
+    def test_placeholders_are_typed_by_their_folder(self, world: Database):
+        assert rows(world, "SELECT type FROM evergreen_placeholders") == [{"type": "evergreen"}]
 
     def test_a_zero_byte_note_elsewhere_is_not_a_placeholder(self, world: Database):
         assert "Empty elsewhere" not in names(world, "SELECT name FROM evergreen_placeholders")
 
-    def test_placeholders_are_not_evergreen_notes(self, world: Database):
-        assert "TODO placeholder" not in names(world, "SELECT name FROM evergreen_notes")
+    def test_placeholders_are_evergreen_notes_that_are_empty(self, world: Database):
+        assert "TODO placeholder" in names(world, "SELECT name FROM evergreen_notes WHERE is_empty")
+        assert "TODO placeholder" not in names(world, "SELECT name FROM evergreen_notes WHERE NOT is_empty")
 
 
 class TestProjects:
@@ -379,8 +380,9 @@ class TestPropertyUsage:
         assert "updated" in keys  # a deprecated property still in use
 
     def test_notes_without_frontmatter_have_no_rows(self, world: Database):
+        """The usage is of what notes write: an empty placeholder has a type (its folder's) but writes none."""
         assert sum(r["notes"] for r in rows(world, "SELECT notes FROM property_usage WHERE key = 'type'")) == world.engine.fetch_one(
-            "SELECT count(*) AS n FROM vault_notes WHERE type IS NOT NULL")["n"]
+            "SELECT count(*) AS n FROM vault_notes WHERE frontmatter ->> '$.type' IS NOT NULL")["n"]
 
 
 class TestPkmDesignTree:

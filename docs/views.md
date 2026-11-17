@@ -15,12 +15,22 @@ episteme.data.views()        # {"evergreen_notes": "Notes of type evergreen, ...
 
 ## Conventions
 
-- **`type` decides what a note is, not its folder.** Three things refer to folders: the archive
-  (`40_Archive/`), the zero-byte Evergreen placeholders (`30_Resources/Evergreen/`, which have no
-  frontmatter and therefore no type) and the `folder` column itself.
-- **`created` is the semantic creation date**, taken from the frontmatter. The file's modification
-  time is exposed as `modified_at`. The file's creation time is deliberately left out, because it
-  differs between machines.
+- **`type` decides what a note is, not its folder.** It is a column of the `notes` table: the `type` the
+  note writes in its frontmatter, always. A note that writes none gets the type its folder implies (setting
+  `OBSIDIAN__TYPE_BY_FOLDER`, by default `30_Resources/Evergreen` is `evergreen`, `20_Lanes` is `lane`, and
+  so on; the longest folder wins), so that even a zero-byte Evergreen placeholder is an evergreen note.
+  Elsewhere folders are only referred to by the archive (`40_Archive/`) and the `folder` column itself.
+  A note with neither a written type nor a typing folder has `type = NULL`.
+- **Templates are `template`.** A template writes the type of the notes made from it (`type: evergreen`), but the notes
+  in `99_Templates/` and `40_Archive/Archived Templates/` are templates whatever they write (setting
+  `OBSIDIAN__FORCED_TYPE_BY_FOLDER`), so they do not turn up as evergreen notes, projects and so on. Finding the
+  template a note follows still goes by the type the note writes.
+- **`created` is the semantic creation date**, a column taken from the frontmatter, and `NULL` when the
+  note has none (or it is not a date). The file's modification time is exposed as `modified_at`. The file's
+  creation time is deliberately left out, because it differs between machines.
+- **Empty placeholders are evergreen notes too.** They appear in `evergreen_notes` with `is_empty = TRUE`; filter
+  `WHERE NOT is_empty` (or on `size`) for the written ones. `evergreen_anki_state` leaves them out: there is nothing
+  in them to process.
 - **Paths are relative to the vault**, as everywhere in the database.
 - **Links are decoded.** `lane: "[[2_Competence Enhancement]]"` becomes
   `lane = '2_Competence Enhancement'`. The macro `link_target()` decodes any link the same way.
@@ -32,7 +42,7 @@ episteme.data.views()        # {"evergreen_notes": "Notes of type evergreen, ...
 | View | Contents |
 |---|---|
 | `vault_notes` | Every note: `type`, `created`, `status`, `folder`, `in_archive`, `is_empty`, `modified_at`, `body_hash`, `frontmatter`. |
-| `evergreen_notes` | `domain`, `ankified_date` (`NULL` means not yet processed into Anki). |
+| `evergreen_notes` | `domain`, `ankified_date` (`NULL` means not yet processed into Anki). Includes the empty placeholders (`is_empty`). |
 | `evergreen_placeholders` | Zero-byte notes in the Evergreen folder: the knowledge-gap TODOs. |
 | `project_notes` | `lane`, `closed_date`, `is_open` (active or paused), `is_closed` (done or abandoned). |
 | `source_notes` | `kind`, `author`, `organization`, `year`, `url`, `consumed_on`, `is_consumed`, `topics` (a list). |
@@ -97,7 +107,8 @@ In the output tables, `NULL` means "no value", lists are shown in brackets and d
 
 ## Examples
 
-How many notes of each type there are. Notes without frontmatter have no type:
+How many notes of each type there are. A note without frontmatter has the type its folder implies, if any (the
+placeholder counts as evergreen):
 
 ```sql
 SELECT type, count(*) AS notes
@@ -109,13 +120,12 @@ ORDER BY type NULLS LAST;
 | type | notes |
 |---|---|
 | daily_note | 5 |
-| evergreen | 6 |
+| evergreen | 7 |
 | lane | 2 |
 | pkm_design | 3 |
 | project | 5 |
 | source | 3 |
 | weekly_review | 2 |
-| NULL | 1 |
 
 Evergreen notes created in a period, by domain. Notes without a domain are left out of the table but still count towards the total of the period:
 

@@ -353,6 +353,8 @@ class ObsidianVault:
             path=self._relative(note_path),
             absolute_path=note_path,
             category_directory=self._get_category_directory(note_path),
+            inferred_type=self._infer_type(self._relative(note_path)),
+            forced_type=self._force_type(self._relative(note_path)),
             created_at=datetime.fromtimestamp(stat.st_ctime),
             updated_at=datetime.fromtimestamp(stat.st_mtime),
             size=stat.st_size
@@ -399,6 +401,49 @@ class ObsidianVault:
                     nested_subdirectory = self._map_subdirectory(Path(note.path))
                     subdirectory.subdirectories.append(nested_subdirectory)
         return subdirectory
+
+    @staticmethod
+    def _type_of_folder(rules: dict[str, str], relative: PurePosixPath) -> str | None:
+        """The type that the rules give to a note, by its folder: the longest matching folder wins.
+
+        A folder matches the notes directly in it and in its subfolders, not a folder that only starts with the same
+        letters (``30_Resources/Evergreen`` is not ``30_Resources/Evergreen notes``).
+
+        Examples:
+            >>> rules = {"a": "x", "a/b": "y"}
+            >>> [ObsidianVault._type_of_folder(rules, PurePosixPath(p)) for p in ("a/n.md", "a/b/n.md", "a/b/c/n.md", "ab/n.md", "n.md")]
+            ['x', 'y', 'y', None, None]
+        """
+        folder = unicodedata.normalize("NFC", relative.parent.as_posix())
+        best: tuple[int, str] | None = None
+        for prefix, kind in rules.items():
+            prefix = unicodedata.normalize("NFC", prefix)
+            if (folder == prefix or folder.startswith(prefix + "/")) and (best is None or len(prefix) > best[0]):
+                best = (len(prefix), kind)
+        return best[1] if best else None
+
+    def _infer_type(self, relative: PurePosixPath) -> str | None:
+        """The type a note's folder implies, by ``settings.type_by_folder``: what a note that writes none is taken to be.
+
+        Examples:
+            >>> from episteme.settings import ObsidianSettings
+            >>> vault = ObsidianVault(ObsidianSettings(vault_root="/nonexistent", type_by_folder={"a": "x"}))
+            >>> vault._infer_type(PurePosixPath("a/n.md")), vault._infer_type(PurePosixPath("n.md"))
+            ('x', None)
+        """
+        return self._type_of_folder(self.settings.type_by_folder, relative)
+
+    def _force_type(self, relative: PurePosixPath) -> str | None:
+        """The type a note's folder gives it whatever it writes, by ``settings.forced_type_by_folder`` (the templates).
+
+        Examples:
+            >>> vault = ObsidianVault(ObsidianSettings(vault_root="/nonexistent"))
+            >>> vault._force_type(PurePosixPath("99_Templates/v1.0_evergreen_template.md"))
+            'template'
+            >>> vault._force_type(PurePosixPath("30_Resources/Evergreen/AI/Attention.md")) is None
+            True
+        """
+        return self._type_of_folder(self.settings.forced_type_by_folder, relative)
 
     def _get_category_directory(self, note_path: Path) -> CategoryDirectory:
         """Determine the category of a note from its top-level vault directory.
@@ -564,7 +609,8 @@ class ObsidianVault:
             note: Note to attach.
 
         Returns:
-            The same note, with ``absolute_path`` set to ``<vault root>/<note.path>``.
+            The same note, with ``absolute_path`` set to ``<vault root>/<note.path>`` and ``inferred_type`` and ``forced_type``
+            set to what this vault's folder rules say (the database stores the resulting ``type``, not the rule).
 
         Examples:
             >>> import tempfile
@@ -581,6 +627,8 @@ class ObsidianVault:
             []
         """
         note.absolute_path = self.settings.vault_root / note.path
+        note.inferred_type = self._infer_type(PurePosixPath(note.path))
+        note.forced_type = self._force_type(PurePosixPath(note.path))
         return note
 
     def find_note(self, reference: Path | str) -> MarkdownNote:

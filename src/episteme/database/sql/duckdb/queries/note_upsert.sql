@@ -1,9 +1,9 @@
 INSERT INTO notes (
     path, name, category_directory, size, created_at, updated_at,
-    template, template_version, is_archived, archived_at, frontmatter, body_hash
+    template, template_version, is_archived, archived_at, frontmatter, body_hash, type, created
 ) VALUES (
     $path, $name, $category_directory, $size, $created_at, $updated_at,
-    $template, $template_version, $is_archived, $archived_at, $frontmatter, $body_hash
+    $template, $template_version, $is_archived, $archived_at, $frontmatter, $body_hash, $type, $created
 )
 ON CONFLICT (path) DO UPDATE SET
     name = excluded.name,
@@ -16,4 +16,6 @@ ON CONFLICT (path) DO UPDATE SET
     is_archived = excluded.is_archived,
     archived_at = excluded.archived_at,
     frontmatter = excluded.frontmatter,
-    body_hash = excluded.body_hash
+    body_hash = excluded.body_hash,
+    type = excluded.type,
+    created = excluded.created

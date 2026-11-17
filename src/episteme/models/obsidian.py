@@ -151,6 +151,10 @@ class MarkdownNote(_VaultLocated):
         archived_at: Approximate archiving time, if known. Nothing in the vault says when a note was archived
             (moving a file keeps no date Episteme can trust across machines), so it is only set by whoever creates the note.
         category_directory: Category directory where the note is stored.
+        inferred_type: The type the note's folder implies (see ``ObsidianSettings.type_by_folder``), set by the vault.
+            It is only what ``type`` falls back to.
+        forced_type: The type the note's folder gives it whatever it writes (``ObsidianSettings.forced_type_by_folder``:
+            the templates), set by the vault. It is what ``type`` is, when there is one.
 
     The file is not read when the note is created. ``content`` and
     ``frontmatter`` are lazy properties: they are read from the filesystem on
@@ -185,6 +189,8 @@ class MarkdownNote(_VaultLocated):
     is_archived: bool = Field(default=False, description="Whether note is archived")
     archived_at: datetime | None = Field(default=None, description="If note is archived, it tells approximate time when it was archived.")
     category_directory: CategoryDirectory = Field(default=CategoryDirectory.INBOX, description="Category directory where the note is stored")
+    inferred_type: str | None = Field(default=None, description="The type the note's folder implies; what type falls back to")
+    forced_type: str | None = Field(default=None, description="The type the note's folder gives it whatever it writes (templates)")
     size: int = Field(default=0, description="Size of the note in bytes.")
 
     @field_validator("name")
@@ -205,6 +211,70 @@ class MarkdownNote(_VaultLocated):
         if self.category_directory is CategoryDirectory.ARCHIVE and not self.is_archived:
             self.is_archived = True
         return self
+
+    @cached_property
+    def type(self) -> str | None:
+        """What the note is: the type its folder forces, else the ``type`` written in its frontmatter, else the type its
+        folder implies, else ``None``.
+
+        Only a folder that forces a type (the templates) beats what the note writes. A written type that is not text
+        (a list, a number) or is empty does not count. Reading it reads the note's frontmatter, unless the note came
+        from the database, which stores it.
+
+        Examples:
+            >>> note = MarkdownNote(name="a", path="a.md", inferred_type="evergreen")
+            >>> note.__dict__["frontmatter"] = {}
+            >>> note.type
+            'evergreen'
+            >>> del note.type; note.__dict__["frontmatter"] = {"type": " pkm_design "}
+            >>> note.type
+            'pkm_design'
+            >>> del note.type; note.__dict__["frontmatter"] = {"type": ["a", "b"]}
+            >>> note.type
+            'evergreen'
+            >>> template = MarkdownNote(name="t", path="99_Templates/t.md", forced_type="template")
+            >>> template.__dict__["frontmatter"] = {"type": "evergreen"}   # a template of evergreen notes
+            >>> template.type
+            'template'
+        """
+        if self.forced_type:
+            return self.forced_type
+        declared = self.frontmatter.get("type")
+        if isinstance(declared, str) and declared.strip():
+            return declared.strip()
+        return self.inferred_type
+
+    @cached_property
+    def created(self) -> date | None:
+        """The day the note says it was created, from the ``created`` property of its frontmatter; ``None`` if it has none.
+
+        This is the semantic creation date, not the file's: ``created_at`` is the file's time. A value that is
+        not a date (``created: soon``) gives ``None`` rather than an error.
+
+        Examples:
+            >>> from datetime import datetime
+            >>> note = MarkdownNote(name="a", path="a.md")
+            >>> note.__dict__["frontmatter"] = {"created": date(2026, 11, 10)}
+            >>> note.created
+            datetime.date(2026, 11, 10)
+            >>> del note.created; note.__dict__["frontmatter"] = {"created": "2026-11-10T08:30"}
+            >>> note.created
+            datetime.date(2026, 11, 10)
+            >>> del note.created; note.__dict__["frontmatter"] = {"created": "soon"}
+            >>> note.created is None
+            True
+        """
+        value = self.frontmatter.get("created")
+        if isinstance(value, datetime):
+            return value.date()
+        if isinstance(value, date):
+            return value
+        if isinstance(value, str) and re.match(r"\d{4}-\d{2}-\d{2}", value.strip()):
+            try:
+                return date.fromisoformat(value.strip()[:10])
+            except ValueError:
+                return None
+        return None
 
     @cached_property
     def content(self) -> str:

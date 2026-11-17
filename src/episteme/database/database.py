@@ -143,6 +143,10 @@ class Database:
         params["category_directory"] = note.category_directory.value
         params["frontmatter"] = json.dumps(note.frontmatter, default=str)
         params["body_hash"] = note.body_hash
+        params.pop("inferred_type")  # only what type falls back to, and what it is forced to: the type itself is stored
+        params.pop("forced_type")
+        params["type"] = note.type
+        params["created"] = note.created
         return params
 
     @staticmethod
@@ -150,13 +154,16 @@ class Database:
         """Build a :class:`MarkdownNote` from a ``notes`` row.
 
         The stored frontmatter is placed in the note's ``frontmatter`` cache,
-        so reading it does not touch the file. ``content`` stays lazy.
+        so reading it does not touch the file; so are its ``type`` and ``created``. ``content`` stays lazy.
         """
         values = dict(row)
         frontmatter = json.loads(values.pop("frontmatter"))
         body_hash = values.pop("body_hash")
+        kind, created = values.pop("type"), values.pop("created")
         note = MarkdownNote.model_validate(values)
         note.__dict__["frontmatter"] = frontmatter
+        note.__dict__["type"] = kind  # as it was stored: written in the note or implied by its folder
+        note.__dict__["created"] = created
         if body_hash is not None:  # notes stored before the hash existed have none yet
             note.__dict__["body_hash"] = body_hash
         return note
