@@ -78,6 +78,9 @@ class TestBundledSql:
         "anki_notes_select", "anki_notes_upsert", "anki_notes_delete",
         "anki_cards_select", "anki_cards_upsert", "anki_cards_delete",
         "anki_reviews_stats", "anki_reviews_insert", "anki_reviews_clear",
+        "events_insert", "events_select", "events_delete", "events_has_sync", "events_has_check", "alerts_select",
+        "dim_event_types_clear", "dim_event_type_insert", "dim_rules_select", "dim_rule_insert", "dim_rule_close",
+        "dim_rule_describe", "health_findings", "health_open_violations", "notes_paths", "alerts_undelivered",
     }
 
     def test_has_the_required_queries(self, engine: str):

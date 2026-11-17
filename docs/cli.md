@@ -8,6 +8,7 @@ $ episteme sync [obsidian|anki]           # into the database
 $ episteme obsidian read NOTE [--raw] [--body]   # a note, by path or name
 $ episteme obsidian notes [TEXT] [--type T]      # list notes (database)
 $ episteme obsidian templates | new TEMPLATE NAME [-p DIR] | stats
+$ episteme health [--severity S|--rule R|--fail-on S]   |   health check   |   health rules
 $ episteme tasks list [--open|--overdue|--state S|--note N|--fresh|--summary]
 $ episteme tasks show ID | add NOTE "text" [--due D -p high] | update ID [-s S --due D ...] | done ID | delete ID
 $ episteme anki cards [-t TAG]... [-d DECK] [-s STATE] [--due] [--leeches] [-q TEXT] [--where SQL] [--content]
@@ -58,10 +59,14 @@ $ episteme schedule run --sync-obsidian "*/30 * * * *" --sync-anki "0 */6 * * *"
 SCHEDULER__SYNC_CRON=@daily              # every system
 SCHEDULER__SYNC_OBSIDIAN_CRON=*/30 * * * *   # only Obsidian
 SCHEDULER__SYNC_ANKI_CRON=0 */6 * * *        # only Anki
+SCHEDULER__HEALTH_CRON=0 * * * *             # the health check on its own
 SCHEDULER__SNAPSHOT_CRON=0 22 * * 0
 ```
 
-The four jobs (`sync`, `sync_obsidian`, `sync_anki`, `snapshot`) are independent and may be combined; they take turns, so two due at once never use the database together. `schedule jobs` shows the plan and the next run of each job without starting anything. Another job is
+A sync runs the health check afterwards, but a sync that fails or does not run cannot notice itself: the `health` job is what makes
+the rules about stale syncs and missed checks (Y2, Y4; see [Event log](events.md#health-rules)) useful.
+
+The five jobs (`sync`, `sync_obsidian`, `sync_anki`, `health`, `snapshot`) are independent and may be combined; they take turns, so two due at once never use the database together. `schedule jobs` shows the plan and the next run of each job without starting anything. Another job is
 one more entry in `jobs_of` (`cli/commands/schedule.py`) and one more setting.
 
 ## Clearing the database

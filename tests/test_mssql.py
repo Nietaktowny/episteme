@@ -13,6 +13,7 @@ from pathlib import Path
 import pytest
 
 from anki_collection import WARSAW, sample_collection
+from test_events import LATEST_SCHEMA
 from episteme.anki import AnkiSnapshot
 from episteme.database import Database
 from episteme.database._mssql import MSSQLEngine, is_transient, split_batches, translate
@@ -326,7 +327,7 @@ def settings_for(url: str, **kwargs) -> DataSettings:
 class TestAgainstAServer:
     def test_a_missing_database_is_created_and_migrated_from_scratch(self, mssql_url: str):
         with Database(settings_for(mssql_url)) as database:
-            assert database.schema_version == "10"
+            assert database.schema_version == LATEST_SCHEMA
             assert {"notes", "tasks", "anki_cards", "schema_history"} <= set(database.tables())
 
     def test_a_second_open_changes_nothing(self, mssql_url: str):
@@ -627,8 +628,9 @@ class TestSchemas:
         with Database(settings_for(mssql_url)) as database:  # the default schema
             tables = database.engine.fetch_all("SELECT TABLE_SCHEMA AS s FROM INFORMATION_SCHEMA.TABLES")
             assert {row["s"] for row in tables} == {"episteme"}
-            assert database.schema_version == "10" and "notes" in database.tables()
-            assert len(database.views()) == 28 and all(database.views().values())
+            assert database.schema_version == LATEST_SCHEMA and "notes" in database.tables()
+            with Database(DataSettings(url=":memory:")) as duckdb:                       # the same views as the other engine, all described
+                assert set(database.views()) == set(duckdb.views()) and all(database.views().values())
 
     def test_two_schemas_do_not_see_each_other(self, mssql_url: str, tmp_path: Path):
         with Database(settings_for(mssql_url, schema="alpha")) as alpha, Database(settings_for(mssql_url, schema="beta")) as beta:

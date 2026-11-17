@@ -19,6 +19,7 @@ app = typer.Typer(help="Run recurring jobs, each on its own schedule.", no_args_
 Sync = Annotated[str | None, typer.Option("--sync", help="Cron expression of the job that syncs every system, e.g. '0 6 * * *' or @daily. Default: SCHEDULER__SYNC_CRON.", metavar="CRON")]
 SyncObsidian = Annotated[str | None, typer.Option("--sync-obsidian", help="Cron expression of the job that syncs only Obsidian. Default: SCHEDULER__SYNC_OBSIDIAN_CRON.", metavar="CRON")]
 SyncAnki = Annotated[str | None, typer.Option("--sync-anki", help="Cron expression of the job that syncs only Anki. Default: SCHEDULER__SYNC_ANKI_CRON.", metavar="CRON")]
+Health = Annotated[str | None, typer.Option("--health", help="Cron expression of the job that runs the health check, e.g. '0 * * * *'. Default: SCHEDULER__HEALTH_CRON.", metavar="CRON")]
 Snapshot = Annotated[str | None, typer.Option("--snapshot", help="Cron expression of the snapshot job, e.g. '0 22 * * 0' or @weekly. Default: SCHEDULER__SNAPSHOT_CRON.", metavar="CRON")]
 
 
@@ -43,6 +44,7 @@ def jobs_of(episteme: Episteme) -> dict[str, tuple]:
         "sync": (episteme.sync, settings.sync_cron),
         "sync_obsidian": (episteme.sync_obsidian, settings.sync_obsidian_cron),
         "sync_anki": (episteme.sync_anki, settings.sync_anki_cron),
+        "health": (episteme.check_health, settings.health_cron),
         "snapshot": (lambda: episteme.snapshot(overwrite=True), settings.snapshot_cron),
     }
     return {name: (serialized(function), cron) for name, (function, cron) in jobs.items()}
@@ -67,7 +69,7 @@ def _next_run(expression: str) -> datetime | None:
 
 
 @app.command()
-def run(ctx: typer.Context, sync: Sync = None, sync_obsidian: SyncObsidian = None, sync_anki: SyncAnki = None, snapshot: Snapshot = None) -> None:
+def run(ctx: typer.Context, sync: Sync = None, sync_obsidian: SyncObsidian = None, sync_anki: SyncAnki = None, health: Health = None, snapshot: Snapshot = None) -> None:
     """Run the scheduled jobs until Ctrl+C. A job with no schedule does not run.
 
     \b
@@ -80,7 +82,7 @@ def run(ctx: typer.Context, sync: Sync = None, sync_obsidian: SyncObsidian = Non
     if not state.settings.scheduler.enabled:
         raise fail("The scheduler is disabled (SCHEDULER__ENABLED=false).")
     try:
-        plan = _plan(episteme, sync=sync, sync_obsidian=sync_obsidian, sync_anki=sync_anki, snapshot=snapshot)
+        plan = _plan(episteme, sync=sync, sync_obsidian=sync_obsidian, sync_anki=sync_anki, health=health, snapshot=snapshot)
     except ValueError as error:
         raise fail(str(error)) from None
     if not plan:
@@ -96,11 +98,11 @@ def run(ctx: typer.Context, sync: Sync = None, sync_obsidian: SyncObsidian = Non
 
 
 @app.command()
-def jobs(ctx: typer.Context, sync: Sync = None, sync_obsidian: SyncObsidian = None, sync_anki: SyncAnki = None, snapshot: Snapshot = None) -> None:
+def jobs(ctx: typer.Context, sync: Sync = None, sync_obsidian: SyncObsidian = None, sync_anki: SyncAnki = None, health: Health = None, snapshot: Snapshot = None) -> None:
     """Show which jobs would run, on what schedule, and when next (nothing is started)."""
     state = state_of(ctx)
     try:
-        plan = _plan(state.episteme, sync=sync, sync_obsidian=sync_obsidian, sync_anki=sync_anki, snapshot=snapshot)
+        plan = _plan(state.episteme, sync=sync, sync_obsidian=sync_obsidian, sync_anki=sync_anki, health=health, snapshot=snapshot)
     except ValueError as error:
         raise fail(str(error)) from None
     rows = [{"job": name, "cron": expression, "next_run": _next_run(expression)} for name, (_, expression) in plan.items()]

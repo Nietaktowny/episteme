@@ -1,6 +1,7 @@
 """The command line: the commands run against a throw-away vault and database."""
 
 import json
+import sys
 from pathlib import Path
 
 import pytest
@@ -286,7 +287,7 @@ class TestTui:
 
         async def steps(app, pilot):
             await pilot.pause(0.5)
-            assert [tab.id for tab in app.query("TabPane") if tab.id.startswith("tab-")] == ["tab-dashboard", "tab-obsidian", "tab-anki", "tab-sql"]
+            assert [tab.id for tab in app.query("TabPane") if tab.id.startswith("tab-")] == ["tab-dashboard", "tab-obsidian", "tab-health", "tab-anki", "tab-sql"]
             await pilot.press("s")
             await pilot.pause(1.5)
             assert app.episteme.overview().obsidian.notes == 2                       # what the dashboard shows
@@ -344,3 +345,67 @@ def test_the_folder_tree():
     root = build_folders(["a.md", "x/b.md", "x/y/c.md", "x/y/d.md"])
     assert (root.count, root.folders["x"].count, root.folders["x"].folders["y"].count) == (4, 3, 2)
     assert root.notes == ["a.md"] and root.folders["x"].notes == ["x/b.md"]
+
+
+def errors_of(env: list[str]) -> int:
+    """How many open alerts are errors (the test vault's own overdue task is one)."""
+    return sum(1 for alert in json.loads(run(env, "--json", "health").output) if alert["severity"] == "error")
+
+
+class TestHealth:
+    @pytest.fixture
+    def unhealthy(self, env: list[str], tmp_path: Path) -> list[str]:
+        (tmp_path / "vault" / "notes" / "bad.md").write_text('---\ntype: project\nstatus: actve\ncreated: 2026-01-01\n---\nB')
+        assert run(env, "sync").exit_code == 0        # the sync checks the health afterwards
+        return env
+
+    def test_the_sync_records_the_alerts_and_health_lists_them(self, unhealthy):
+        alerts = json.loads(run(unhealthy, "--json", "health").output)
+        assert ("R3", "notes/bad.md", "error") in [(a["rule_id"], a["entity_id"], a["severity"]) for a in alerts]
+        assert alerts[0]["severity"] == "error"                    # the most severe first
+        assert "R3" in run(unhealthy, "health").output
+
+    def test_filters_and_exit_codes(self, unhealthy):
+        assert json.loads(run(unhealthy, "--json", "health", "--rule", "R9").output) == []
+        assert run(unhealthy, "health", "--rule", "R9").exit_code == 0 and "No open alerts" in run(unhealthy, "health", "--rule", "R9").output
+        assert run(unhealthy, "health", "--fail-on", "error").exit_code == 1
+        assert run(unhealthy, "health", "--fail-on", "error", "--rule", "R2").exit_code == 0   # a warning only
+        assert run(unhealthy, "health", "--severity", "nonsense").exit_code == 1
+
+    def test_check_runs_the_check(self, unhealthy):
+        result = json.loads(run(unhealthy, "--json", "health", "check").output)
+        assert (result["baseline"], result["opened"], result["resolved"]) == (False, 0, 0) and result["alerts"]["error"] == errors_of(unhealthy)
+
+    def test_the_catalog_is_listed(self, env):
+        rules = json.loads(run(env, "--json", "health", "rules").output)
+        assert {r["id"] for r in rules} >= {"R1", "K1", "Y3", "E5"}
+        assert sum(r["is_active"] for r in rules) == len(rules) - 2        # S4 and T2 are not evaluated
+
+    def test_doctor_reports_the_alerts_without_failing_on_them(self, unhealthy):
+        result = run(unhealthy, "doctor")
+        assert result.exit_code == 0 and f"{errors_of(unhealthy)} error" in " ".join(result.output.split())
+
+
+class TestNotify:
+    @pytest.fixture
+    def sinks(self, env: list[str], tmp_path: Path) -> tuple[list[str], Path]:
+        log = tmp_path / "sent.log"
+        program = f"import sys; open({str(log)!r}, 'a').write(sys.stdin.read() + '\\n')"
+        sink = json.dumps([{"name": "file", "kind": "command", "command": [sys.executable, "-c", program], "min_severity": "info"}])
+        env_file = Path(env[1])
+        env_file.write_text(env_file.read_text() + f"ALERTS__SINKS={sink}\n")
+        return env, log
+
+    def test_a_sync_sends_and_notify_has_nothing_left(self, sinks, tmp_path: Path):
+        env, log = sinks
+        assert run(env, "sync").exit_code == 0                                  # the first check: the baseline is not sent
+        (tmp_path / "vault" / "notes" / "bad.md").write_text('---\ntype: project\nstatus: actve\ncreated: 2026-01-01\n---\nB')
+        assert run(env, "sync").exit_code == 0
+        assert [json.loads(line)["rule_id"] for line in log.read_text().splitlines()] == ["R3"]
+        result = json.loads(run(env, "--json", "health", "notify").output)
+        assert (result["delivered"], result["failed"], result["sinks"]) == (0, 0, ["file"])
+
+    def test_without_sinks_notify_says_so_and_doctor_too(self, env):
+        result = run(env, "health", "notify")
+        assert result.exit_code == 1 and "ALERTS__SINKS" in result.output
+        assert "no sinks" in " ".join(run(env, "doctor").output.split())

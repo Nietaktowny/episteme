@@ -15,9 +15,11 @@ import re
 import time
 from collections.abc import Callable
 from datetime import date, datetime
+from pathlib import Path
 
 from rich import print
 
+from episteme import notify
 from episteme.anki import AnkiCollection
 from episteme.settings import EpistemeSettings
 from episteme.database import Database
@@ -26,6 +28,7 @@ from episteme.scheduler import EpistemeScheduler
 
 from episteme.models.database import Snapshot
 from episteme.models.errors import ErrorInfo
+from episteme.models.health import HealthResult
 from episteme.models.obsidian import MarkdownNote, Task
 from episteme.models.overview import Overview
 from episteme.models.sync import AnkiSyncResult, ObsidianSyncResult, SyncResult
@@ -74,7 +77,7 @@ class Episteme:
                 :class:`EpistemeSettings` (environment / ``.env``) are used.
         """
         self.settings: EpistemeSettings = settings if settings is not None else EpistemeSettings()
-        self.data = Database(self.settings.data)
+        self.data = Database(self.settings.data, rule_parameters=self.settings.health.rules)
         self.obsidian: ObsidianVault = ObsidianVault(self.settings.obsidian)
         self.anki: AnkiCollection = AnkiCollection(self.settings.anki)
         self.scheduler = EpistemeScheduler(self.settings.scheduler)
@@ -105,11 +108,77 @@ class Episteme:
             ...     (result.added, result.unchanged, result.ok)
             (1, 0, True)
         """
-        self.obsidian.map()
-        self.obsidian.detect_templates()      # which template (and version) each note was created from
-        tasks = self.obsidian.scan_for_tasks(require_id=True)  # only tasks with an id written in their note are stored
-        result = self.data.sync_notes(self.obsidian, tasks)
-        return result.model_copy(update={"mapping_seconds": self.obsidian.statistics.mapping_duration or 0.0})
+        try:
+            self.obsidian.map()
+            self.obsidian.detect_templates()      # which template (and version) each note was created from
+            tasks = self.obsidian.scan_for_tasks(require_id=True)  # only tasks with an id written in their note are stored
+            result = self.data.sync_notes(self.obsidian, tasks, mapping_seconds=self.obsidian.statistics.mapping_duration or 0.0)
+        except Exception as error:
+            self.data.record_sync_failure("obsidian", error)   # a failed sync rolled back its own events
+            raise
+        try:
+            self.check_health()          # the notes just changed: so may their violations
+        except Exception:
+            logger.exception("The health check after the sync failed")   # the sync itself worked: it is not undone
+        return result
+
+    def check_health(self) -> HealthResult:
+        """Check the stored notes against the health rules, record what opened and what was resolved, and send new alerts.
+
+        It reads the database, not the vault: sync first (:meth:`sync_obsidian` does this check itself afterwards).
+        See :meth:`episteme.database.Database.check_health` and :meth:`deliver_alerts`. A sink that fails does not fail the
+        check: the failure is recorded and the alert is tried again at the next one.
+        """
+        result = self.data.check_health()
+        try:
+            delivered, failed = self.deliver_alerts()
+        except Exception:
+            logger.exception("Delivering alerts failed")
+            return result
+        return result.model_copy(update={"delivered": delivered, "delivery_failed": failed})
+
+    def deliver_alerts(self, dry_run: bool = False) -> tuple[int, int]:
+        """Send the open alerts that each sink has not received yet (``ALERTS__SINKS``).
+
+        An alert goes to a sink once per severity: when it escalates it is sent again. A sink only gets alerts of its
+        ``min_severity`` or worse, at most ``ALERTS__LIMIT`` per call; alerts of the archive, and those of the first
+        check of a database, are not sent (see :class:`~episteme.settings.AlertSettings`). Every delivery, and every
+        failure, is an event (``alert.delivered``, ``alert.delivery_failed``).
+
+        Args:
+            dry_run: Only count what would be sent; send nothing and record nothing.
+
+        Returns:
+            How many alerts were delivered (or would be) and how many deliveries failed.
+        """
+        settings = self.settings.alerts
+        delivered = failed = 0
+        for sink in settings.sinks:
+            for alert in self.data.pending_alerts(sink.name, sink.min_severity, settings.limit, settings.include_baseline):
+                if dry_run:
+                    delivered += 1
+                    continue
+                try:
+                    notify.deliver(sink, alert)
+                except notify.DeliveryError as error:
+                    failed += 1
+                    logger.warning("Could not deliver alert %s to '%s': %s", alert.violation_id, sink.name, error)
+                    self.data.record_delivery(alert, sink.name, sink.kind, error=str(error))
+                else:
+                    delivered += 1
+                    self.data.record_delivery(alert, sink.name, sink.kind)
+        return delivered, failed
+
+    def new_note(self, template: str, name: str, version: float | None = None, path: Path | str = Path(".")) -> MarkdownNote:
+        """Create a note from a template, and record it (``action.note_created``).
+
+        See :meth:`episteme.obsidian.ObsidianVault.create_from_template` for the arguments and what it raises. The database
+        learns of the note at the next sync, which records it again as what the vault shows (``note.created``).
+        """
+        note = self.obsidian.create_from_template(template, name, template_version=version, path=path)
+        self.data.record_action("action.note_created", str(note.path), template=template, template_version=version,
+                                type=note.type, folder=note.path.parent.as_posix())
+        return note
 
     def sync_anki(self) -> AnkiSyncResult:
         """Read the Anki collection and bring the database's Anki statistics in line with it.
@@ -143,9 +212,13 @@ class Episteme:
             'AnkiCollectionNotFoundError'
         """
         started = time.perf_counter()
-        with self.anki.snapshot() as snapshot:
-            copy_seconds = time.perf_counter() - started
-            result = self.data.sync_anki(snapshot)
+        try:
+            with self.anki.snapshot() as snapshot:
+                copy_seconds = time.perf_counter() - started
+                result = self.data.sync_anki(snapshot)
+        except Exception as error:
+            self.data.record_sync_failure("anki", error)   # a failed sync rolled back its own events
+            raise
         return result.model_copy(update={"copy_seconds": copy_seconds})
 
     def snapshot(self, label: str | None = None, overwrite: bool = False) -> Snapshot:
@@ -285,7 +358,10 @@ class Episteme:
         task = Task(note_path=target.path, content=content)
         if edit is not None:
             edit(task)
-        return self.obsidian.tasks.create_task(target, task)
+        created = self.obsidian.tasks.create_task(target, task)
+        self.data.record_action("action.task_added", created.id, note_path=target.path.as_posix(), state=created.state.value,
+                                due_date=created.due_date.date().isoformat() if created.due_date else None)
+        return created
 
     def edit_task(self, task_id: str, edit: Callable[[Task], object]) -> Task:
         """Change a task in its note: ``edit`` receives the task and modifies it (``task.complete()``, ...).
@@ -295,8 +371,17 @@ class Episteme:
             StaleTaskError: If its note was edited since it was read.
         """
         note, task = self.find_task(task_id)
+        before = {"state": task.state.value, "due_date": task.due_date, "scheduled_date": task.scheduled_date,
+                  "start_date": task.start_date, "priority": task.priority, "content": task.content}
         edit(task)
-        return self.obsidian.tasks.update_task(note, task)
+        updated = self.obsidian.tasks.update_task(note, task)
+        changed = [key for key, value in before.items() if key != "state" and getattr(updated, key) != value]
+        if updated.state.value != before["state"]:
+            changed.insert(0, "state")
+        done = updated.state.value == "done" and before["state"] != "done"
+        self.data.record_action("action.task_completed" if done else "action.task_updated", updated.id, note_path=note.path.as_posix(),
+                                state=updated.state.value, previous_state=before["state"], changed=changed)
+        return updated
 
     def delete_task(self, task_id: str) -> Task:
         """Remove a task's line from its note. Returns the task that was removed.
@@ -306,4 +391,5 @@ class Episteme:
         """
         note, task = self.find_task(task_id)
         self.obsidian.tasks.delete_task(note, task)
+        self.data.record_action("action.task_deleted", task.id, note_path=note.path.as_posix(), state=task.state.value)
         return task

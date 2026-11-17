@@ -84,7 +84,7 @@ def new(
     """Create a note from a template."""
     state = state_of(ctx)
     try:
-        note = state.episteme.obsidian.create_from_template(template, name, template_version=version, path=path)
+        note = state.episteme.new_note(template, name, version=version, path=path)
     except (FileNotFoundError, FileExistsError, ValueError) as error:
         raise fail(str(error)) from None
     emit(state, {"name": note.name, "path": str(note.path)}, f"Created [bold]{note.path}[/]")

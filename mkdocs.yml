@@ -43,6 +43,7 @@ nav:
   - Home: index.md
   - Command line: cli.md
   - Database views: views.md
+  - Event log: events.md
   - Azure SQL: azure-sql.md
   - Anki: anki.md
   - Snapshots: snapshots.md
@@ -60,3 +61,4 @@ nav:
       - episteme.models.obsidian: reference/models_obsidian.md
       - episteme.models.anki: reference/models_anki.md
       - episteme.models.database: reference/models_database.md
+      - episteme.models.events: reference/models_events.md

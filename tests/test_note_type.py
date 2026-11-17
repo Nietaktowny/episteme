@@ -11,6 +11,7 @@ from pathlib import Path, PurePosixPath
 
 import pytest
 
+from test_events import LATEST_SCHEMA
 from episteme.database import Database
 from episteme.database._duckdb import DuckDBEngine
 from episteme.database.migrations import Migrations
@@ -370,7 +371,8 @@ class TestUpgradingADatabaseWithNotes:
         real = Path(str(DuckDBEngine(":memory:").sql_dir))
         old = tmp_path / "old_sql"
         shutil.copytree(real, old)
-        (old / "migrations" / "V10__notes_type_and_created.sql").unlink()
+        for later in ("V10__notes_type_and_created.sql", "V11__create_events.sql", "V12__create_event_views.sql", "V13__create_health_views.sql", "V14__create_rule_detectors.sql", "V15__create_action_views.sql"):
+            (old / "migrations" / later).unlink()
         engine = OldDuckDB(str(tmp_path / "old.duckdb"))
         engine.sql_dir_override = old
         Migrations(engine, QueryStore(engine.sql_dir / "queries")).migrate()
@@ -381,7 +383,7 @@ class TestUpgradingADatabaseWithNotes:
         engine.close()
 
         with Database(DataSettings(url=str(tmp_path / "old.duckdb"))) as database:
-            assert database.schema_version == "10"
+            assert database.schema_version == LATEST_SCHEMA
             got = {row["path"]: (row["type"], row["created"]) for row in query(database, "SELECT path, type, created FROM notes")}
             assert got == {"a.md": ("project", date(2026, 11, 10)), "b.md": (None, None), "c.md": (None, None)}
             assert "idx_notes_type" in database.indexes()
@@ -395,7 +397,8 @@ class TestUpgradingADatabaseWithNotes:
         settings = Settings(engine="mssql", url=mssql_url, create_database=True)
         old = tmp_path / "old_sql"
         shutil.copytree(Path(str(MSSQLEngine.__new__(MSSQLEngine).sql_dir)), old)  # sql_dir needs no connection
-        (old / "migrations" / "V10__notes_type_and_created.sql").unlink()
+        for later in ("V10__notes_type_and_created.sql", "V11__create_events.sql", "V12__create_event_views.sql", "V13__create_health_views.sql", "V14__create_rule_detectors.sql", "V15__create_action_views.sql"):
+            (old / "migrations" / later).unlink()
 
         class OldEngine(MSSQLEngine):
             @property
@@ -413,7 +416,7 @@ class TestUpgradingADatabaseWithNotes:
         engine.close()
 
         with Database(settings) as database:
-            assert database.schema_version == "10"
+            assert database.schema_version == LATEST_SCHEMA
             got = {row["path"]: (row["type"], row["created"]) for row in query(database, "SELECT path, type, created FROM [episteme].notes")}
             assert got == {"a.md": ("project", date(2026, 11, 10)), "b.md": (None, None), "c.md": (None, None)}
             assert "idx_notes_type" in database.indexes()

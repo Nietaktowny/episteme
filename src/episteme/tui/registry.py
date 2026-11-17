@@ -44,6 +44,7 @@ class Screen:
 BUILTIN = (
     "episteme.tui.screens.dashboard",
     "episteme.tui.screens.obsidian",
+    "episteme.tui.screens.health",
     "episteme.tui.screens.anki",
     "episteme.tui.screens.sql",
 )

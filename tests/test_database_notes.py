@@ -277,7 +277,7 @@ class TestSyncNotes:
         vault.map()
         written: list[int] = []
         original = database.engine.execute_many
-        monkeypatch.setattr(database.engine, "execute_many", lambda sql, rows: (written.append(len(rows)), original(sql, rows))[1])
+        monkeypatch.setattr(database.engine, "execute_many", lambda sql, rows: (written.append(len(rows)) if "events" not in sql else None, original(sql, rows))[1])
         database.sync_notes(vault.root.iter_notes())
         assert written == [1]  # only a.md
 

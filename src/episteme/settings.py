@@ -9,10 +9,11 @@ import json
 import re
 from enum import Enum, StrEnum
 from pathlib import Path
+from typing import Literal
 from zoneinfo import ZoneInfo, ZoneInfoNotFoundError
 
 from pydantic_settings import BaseSettings, SettingsConfigDict
-from pydantic import ConfigDict, Field, BaseModel, SecretStr, field_validator
+from pydantic import ConfigDict, Field, BaseModel, SecretStr, field_validator, model_validator
 
 DEFAULT_TYPE_BY_FOLDER = {
     "10_Projects": "project",
@@ -294,6 +295,8 @@ class SchedulerSettings(BaseModel):
         sync_cron: When to sync every system into the database (``SCHEDULER__SYNC_CRON``).
         sync_obsidian_cron: When to sync only the Obsidian vault (``SCHEDULER__SYNC_OBSIDIAN_CRON``).
         sync_anki_cron: When to sync only Anki (``SCHEDULER__SYNC_ANKI_CRON``).
+        health_cron: When to run the health check on its own (``SCHEDULER__HEALTH_CRON``); a sync runs it too, but a
+            sync that fails or does not run cannot notice itself.
         snapshot_cron: When to take a snapshot of the vault's notes (``SCHEDULER__SNAPSHOT_CRON``).
 
     Examples:
@@ -318,9 +321,10 @@ class SchedulerSettings(BaseModel):
     sync_cron: str | None = Field(None, description="Cron expression of the sync job, e.g. '0 6 * * *' or '@daily' (no schedule: the job does not run)")
     sync_obsidian_cron: str | None = Field(None, description="Cron expression of the job that syncs only Obsidian, e.g. '*/30 * * * *' (no schedule: the job does not run)")
     sync_anki_cron: str | None = Field(None, description="Cron expression of the job that syncs only Anki, e.g. '0 */6 * * *' (no schedule: the job does not run)")
+    health_cron: str | None = Field(None, description="Cron expression of the job that runs the health check, e.g. '0 * * * *' (no schedule: the job does not run)")
     snapshot_cron: str | None = Field(None, description="Cron expression of the snapshot job, e.g. '0 22 * * 0' or '@weekly' (no schedule: the job does not run)")
 
-    @field_validator("sync_cron", "sync_obsidian_cron", "sync_anki_cron", "snapshot_cron")
+    @field_validator("sync_cron", "sync_obsidian_cron", "sync_anki_cron", "health_cron", "snapshot_cron")
     @classmethod
     def _is_cron(cls, expression: str | None) -> str | None:
         if expression is None or not expression.strip():
@@ -329,6 +333,92 @@ class SchedulerSettings(BaseModel):
         if not (len(parts) == 5 or (len(parts) == 1 and parts[0].lower() in ALIASES)):
             raise ValueError(f"'{expression}' is not a cron expression: use five fields (minute hour day month weekday) or @hourly, @daily, @weekly, @monthly.")
         return expression.strip()
+
+class HealthSettings(BaseModel):
+    """Settings of the health rules.
+
+    Attributes:
+        rules: The limits of the rules that have any, by rule id: ``{"K1": {"days": 30}}`` makes an unprocessed evergreen
+            an alert after 30 days instead of 14 (``HEALTH__RULES='{"K1": {"days": 30}}'``). Only the limits a rule has
+            can be set (see ``episteme health rules``). A changed limit makes a new version of the rule, so earlier
+            violations keep the limit they were found with.
+
+    Examples:
+        >>> HealthSettings(rules={"K1": {"days": 30}}).rules
+        {'K1': {'days': 30}}
+    """
+
+    rules: dict[str, dict[str, int]] = Field(default_factory=dict, description="Limits of the health rules by rule id, e.g. {\"K1\": {\"days\": 30}}")
+
+
+class SinkSettings(BaseModel):
+    """Where alerts are sent: one sink.
+
+    A sink receives each alert as a JSON document (see :class:`episteme.models.health.Alert`). Two kinds:
+
+    * ``command``: the command is run, without a shell, with the alert on its standard input. Anything that reads
+      standard input can be a sink: ``["notify-send", ...]`` wrappers, a script that talks to a chat, ``["tee", "-a", file]``.
+    * ``webhook``: the alert is POSTed as JSON to ``url``.
+
+    Attributes:
+        name: Names the sink in the event log and in ``episteme health`` output; must be unique.
+        kind: ``command`` or ``webhook``.
+        command: The command and its arguments (``kind='command'``).
+        url: The address to POST to (``kind='webhook'``). Use ``https``: the alert names notes.
+        headers: Headers to send with a webhook, e.g. an authorization token.
+        min_severity: Only alerts of this severity or a more serious one are sent: ``info``, ``warn`` or ``error``.
+        timeout: Seconds to wait for the command or the webhook before the delivery counts as failed.
+
+    Examples:
+        >>> SinkSettings(name="phone", kind="webhook", url="https://example.com/hook").min_severity
+        'error'
+        >>> try:
+        ...     SinkSettings(name="x", kind="command")
+        ... except ValueError as error:
+        ...     "A command sink needs a command." in str(error)
+        True
+    """
+
+    name: str = Field(..., min_length=1, description="Name of the sink")
+    kind: Literal["command", "webhook"] = Field(..., description="command or webhook")
+    command: list[str] | None = Field(None, description="Command and arguments (kind=command); the alert is on its standard input")
+    url: str | None = Field(None, description="Address to POST the alert to (kind=webhook)")
+    headers: dict[str, str] = Field(default_factory=dict, description="Headers of a webhook, e.g. an authorization token")
+    min_severity: Literal["info", "warn", "error"] = Field("error", description="Only this severity or a more serious one is sent")
+    timeout: float = Field(10.0, gt=0, description="Seconds before a delivery counts as failed")
+
+    @model_validator(mode="after")
+    def _complete(self) -> "SinkSettings":
+        if self.kind == "command" and not self.command:
+            raise ValueError("A command sink needs a command.")
+        if self.kind == "webhook" and not (self.url and self.url.startswith(("http://", "https://"))):
+            raise ValueError("A webhook sink needs an http(s) url.")
+        return self
+
+
+class AlertSettings(BaseModel):
+    """Alert delivery.
+
+    Attributes:
+        sinks: Where alerts go (``ALERTS__SINKS='[{"name": "phone", "kind": "webhook", "url": "https://..."}]'``). With none,
+            nothing is sent: alerts are in ``episteme health``, the TUI, ``doctor`` and the ``open_alerts`` view.
+        limit: Most alerts sent to one sink by one check; the rest wait for the next. A first check on a messy vault
+            would otherwise be a flood.
+        include_baseline: Also send the alerts of the first health check of a database. They are as old as the vault, not new, so by
+            default they are not sent.
+    """
+
+    sinks: list[SinkSettings] = Field(default_factory=list, description="Where alerts are sent")
+    limit: int = Field(20, ge=1, description="Most alerts sent to one sink per check")
+    include_baseline: bool = Field(False, description="Also send the alerts the first health check found")
+
+    @model_validator(mode="after")
+    def _unique(self) -> "AlertSettings":
+        names = [sink.name for sink in self.sinks]
+        if len(names) != len(set(names)):
+            raise ValueError("Sink names must be unique.")
+        return self
+
 
 class EpistemeSettings(BaseSettings):
     """Top-level Episteme settings.
@@ -341,6 +431,8 @@ class EpistemeSettings(BaseSettings):
         anki: Anki collection settings.
         data: Database settings.
         scheduler: Scheduler settings.
+        health: Health rule settings.
+        alerts: Alert delivery settings.
 
     Examples:
         >>> settings = EpistemeSettings(obsidian=ObsidianSettings(vault_root="/tmp/vault"))
@@ -368,6 +460,8 @@ class EpistemeSettings(BaseSettings):
     anki: AnkiSettings = Field(default_factory=AnkiSettings, description="Anki collection settings")
     data: DataSettings = Field(default_factory=DataSettings, description="Database settings")
     scheduler: SchedulerSettings = Field(default_factory=SchedulerSettings, description="Scheduler settings")
+    health: HealthSettings = Field(default_factory=HealthSettings, description="Health rule settings")
+    alerts: AlertSettings = Field(default_factory=AlertSettings, description="Alert delivery settings")
 
 def example_env(settings: type[BaseSettings] = EpistemeSettings) -> str:
     """The text of an example ``.env`` file with every setting at its default.

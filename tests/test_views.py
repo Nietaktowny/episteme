@@ -7,6 +7,7 @@ from pathlib import Path
 import duckdb
 import pytest
 
+from test_events import EVENT_VIEWS
 from episteme.settings import DataSettings, ObsidianSettings
 from episteme.database import Database
 from episteme.obsidian import ObsidianVault
@@ -508,7 +509,8 @@ class TestPropertyIssues:
 
 class TestTheViewsThemselves:
     def test_exactly_these_views_exist(self, world: Database):
-        assert {view for view in world.views() if not view.startswith("anki_")} == EXPECTED_VIEWS  # the Anki views: test_anki.py
+        # The Anki views: test_anki.py. The event views: test_events.py and test_health_rules.py.
+        assert {view for view in world.views() if not view.startswith("anki_") and view not in EVENT_VIEWS} == EXPECTED_VIEWS
 
     def test_every_view_is_described(self, world: Database):
         assert all(comment and comment.endswith((".", ")")) for comment in world.views().values())
@@ -523,7 +525,8 @@ class TestTheViewsThemselves:
             world.engine.execute(f"DELETE FROM {view}")
 
     def test_tables_do_not_include_views(self, world: Database):
-        assert set(world.tables()) - {t for t in world.tables() if t.startswith("anki_")} == {"notes", "schema_history", "tasks"}
+        event_tables = {"events", "dim_date", "dim_event_type", "dim_rule", "dim_severity"}
+        assert set(world.tables()) - {t for t in world.tables() if t.startswith("anki_")} - event_tables == {"notes", "schema_history", "tasks"}
 
     def test_views_follow_the_data(self, tmp_path: Path):
         write(tmp_path, "a.md", "type: evergreen\ncreated: 2026-01-01\ndomain: ai")

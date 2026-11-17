@@ -67,6 +67,7 @@ class Extension:
 BUILTIN = (
     "episteme.cli.commands.sync",
     "episteme.cli.commands.status",
+    "episteme.cli.commands.health",
     "episteme.cli.commands.obsidian",
     "episteme.cli.commands.tasks",
     "episteme.cli.commands.anki",

@@ -12,6 +12,9 @@ from episteme.database import Database
 from episteme.obsidian import ObsidianVault
 
 PAGE = Path(__file__).parent.parent / "docs" / "views.md"
+EVENT_VIEWS = {"note_events", "dim_note", "fact_events", "fact_sync_runs", "activity_daily",
+               "health_findings", "health_events", "fact_violations", "open_alerts",
+               "health_detections", "rule_limits", "task_events", "action_events", "alert_deliveries"}   # documented in docs/events.md
 TEXT = PAGE.read_text(encoding="utf-8")
 
 # The sample vault of the documentation: path -> (frontmatter or None, modification time or None, body).
@@ -131,11 +134,11 @@ def test_every_example_shows_its_output(database: Database, sql: str):
 
 def test_every_view_is_listed_on_the_page(database: Database):
     listed = set(re.findall(r"^\| `(\w+)` \|", TEXT, flags=re.M))
-    assert listed == {view for view in database.views() if not view.startswith("anki_")}  # the Anki views: docs/anki.md
+    assert listed == {view for view in database.views() if not view.startswith("anki_") and view not in EVENT_VIEWS}  # the Anki views: docs/anki.md, the event views: docs/events.md
 
 
 def test_every_view_has_an_example(database: Database):
-    for view in (view for view in database.views() if not view.startswith("anki_")):
+    for view in (view for view in database.views() if not view.startswith("anki_") and view not in EVENT_VIEWS):
         assert any(re.search(rf"\b{view}\b", sql) for sql, _ in EXAMPLES), f"no example uses {view}"
 
 

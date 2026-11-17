@@ -10,13 +10,20 @@ from episteme.database._duckdb import DuckDBEngine
 from episteme.models.obsidian import MarkdownNote
 
 ANKI_TABLES = {"anki_collection", "anki_decks", "anki_deck_options", "anki_notes", "anki_cards", "anki_reviews"}
-EXPECTED_TABLES = {"notes", "schema_history", "tasks"} | ANKI_TABLES
+EVENT_TABLES = {"events", "dim_date", "dim_event_type", "dim_rule", "dim_severity"}
+EXPECTED_TABLES = {"notes", "schema_history", "tasks"} | ANKI_TABLES | EVENT_TABLES
 EXPECTED_INDEXES = {
     "idx_notes_name",
     "idx_notes_type",
     "idx_notes_category_directory",
     "idx_notes_created_at",
     "idx_notes_updated_at",
+    "idx_events_type_time",
+    "idx_events_entity_time",
+    "idx_events_system_category_time",
+    "idx_events_occurred_date",
+    "idx_events_rule",
+    "idx_events_run",
     "idx_anki_cards_note_id",
     "idx_anki_cards_deck_id",
     "idx_anki_reviews_card_id",
