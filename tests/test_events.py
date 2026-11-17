@@ -12,7 +12,7 @@ import pytest
 from episteme.database import Database
 from episteme.models.events import EVENT_TYPES, RULES, Event, Rule, Severity
 from episteme.obsidian import ObsidianVault
-from episteme.settings import DataSettings, DatabaseEngineName, ObsidianSettings
+from episteme.settings import DataSettings, DatabaseEngineName, EpistemeSettings, ObsidianSettings
 
 
 LATEST_SCHEMA = str(max(
@@ -483,3 +483,96 @@ class TestHealthLifecycle:
     def test_the_rule_dimension_marks_what_is_evaluated(self, database: Database):
         rows = _rows(database, "SELECT rule_id, is_active FROM {p}dim_rule WHERE valid_to IS NULL")
         assert {r["rule_id"] for r in rows if not r["is_active"]} == {"S4", "T2"}        # what nothing evaluates yet
+
+
+class TestWhatTheTuiAsksTheDatabase:
+    """The TUI has no SQL of its own: the database answers in the dialect of its engine, in its own schema."""
+
+    def test_note_paths_are_searched_in_any_case(self, database: Database, vault_root: Path):
+        write(vault_root, "30_Resources/Evergreen/Attention.md", "---\ntype: evergreen\ncreated: 2026-01-01\n---\nA")
+        write(vault_root, "10_Projects/Episteme.md", "---\ntype: project\ncreated: 2026-01-01\n---\nP")
+        sync(database, vault_root)
+        assert database.search_note_paths() == ["10_Projects/Episteme.md", "30_Resources/Evergreen/Attention.md"]
+        assert database.search_note_paths("ATTENTION") == ["30_Resources/Evergreen/Attention.md"]
+        assert database.search_note_paths("Project") == ["10_Projects/Episteme.md"]               # by type
+        assert database.search_note_paths("nothing like this") == []
+
+    def test_the_anki_screens_work_before_and_after_a_sync(self, database: Database, tmp_path: Path):
+        from anki_collection import WARSAW, sample_collection
+        from episteme.anki import AnkiSnapshot
+
+        assert database.anki_today() == [] and database.anki_decks() == []
+        with AnkiSnapshot.open(sample_collection(tmp_path / "collection.anki2"), WARSAW) as snapshot:
+            database.sync_anki(snapshot)
+        assert len(database.anki_today()) == 1 and database.anki_decks()
+
+
+class TestWhatTheCommandLineAsksTheDatabase:
+    """``episteme obsidian notes`` and ``episteme anki cards`` have no SQL of their own either."""
+
+    def test_notes_are_listed_newest_first_and_filtered(self, database: Database, vault_root: Path):
+        import os
+
+        write(vault_root, "Old.md", "---\ntype: project\ncreated: 2026-01-01\n---\nO")
+        write(vault_root, "New.md", "---\ntype: evergreen\ncreated: 2026-01-01\n---\nN")
+        os.utime(vault_root / "Old.md", (1_600_000_000, 1_600_000_000))
+        sync(database, vault_root)
+        assert [r["path"] for r in database.list_notes()] == ["New.md", "Old.md"]
+        assert [r["path"] for r in database.list_notes("OLD")] == ["Old.md"]
+        assert [r["path"] for r in database.list_notes(note_type="evergreen")] == ["New.md"]
+        assert database.list_notes("old", "evergreen") == []
+
+    @pytest.fixture
+    def anki(self, database: Database, tmp_path: Path) -> Database:
+        from anki_collection import WARSAW, sample_collection
+        from episteme.anki import AnkiSnapshot
+
+        with AnkiSnapshot.open(sample_collection(tmp_path / "collection.anki2"), WARSAW) as snapshot:
+            database.sync_anki(snapshot)
+        return database
+
+    @staticmethod
+    def ids(database: Database, **filters) -> set[int]:
+        return {row["card_id"] for row in database.find_anki_cards(**filters)}
+
+    def test_cards_by_tag_in_any_case_all_of_them(self, anki: Database):
+        assert self.ids(anki, tags=["vocab"]) == {1001, 1002, 1006, 1007}
+        assert self.ids(anki, tags=["VOCAB", "Grammar"]) == {1002, 1007}
+        assert self.ids(anki, tags=["nothing"]) == set()
+
+    def test_cards_by_deck_and_the_decks_below_it(self, anki: Database):
+        assert self.ids(anki, deck="Languages") == {1001, 1002, 1006, 1007}
+        assert self.ids(anki, deck="Languages::Polish") == {1002, 1007}
+        assert self.ids(anki, deck="Lang") == set()
+
+    def test_cards_by_state_leeches_and_a_condition_of_the_users_own(self, anki: Database):
+        assert self.ids(anki, state="new") == {1003, 1004}
+        assert self.ids(anki, leeches=True) == {1001, 1006}
+        assert 1001 in self.ids(anki, due=True) and self.ids(anki, due=True, leeches=True) == {1001}
+        assert self.ids(anki, where="lapses > 3") == {1001}
+        assert self.ids(anki, tags=["vocab"], deck="Languages", state="review", due=True) == {1001}
+
+    def test_a_card_has_its_tags_as_a_list_and_cards_come_in_the_order_they_are_due(self, anki: Database):
+        rows = anki.find_anki_cards()
+        assert {r["card_id"]: r["tags"] for r in rows}[1001] == ["vocab", "leech"]
+        assert len(rows) == 9 and anki.count_anki_cards() == 9
+        dates = [r["due_date"] for r in rows if r["due_date"] is not None]
+        assert dates == sorted(dates) and [r["due_date"] is None for r in rows] == sorted(r["due_date"] is None for r in rows)
+
+
+class TestEveryTuiScreenLoadsOnEveryEngine:
+    """Opening the TUI on SQL Server once failed on three screens that had DuckDB's SQL in them."""
+
+    def test_the_data_of_every_screen(self, database: Database, vault_root: Path, tmp_path: Path):
+        from episteme import Episteme
+        from episteme.tui.registry import discover
+
+        write(vault_root, "a.md", "---\ntype: project\nstatus: actve\ncreated: 2026-01-01\n---\nA\n- [ ] a task 🆔 t1 📅 2020-01-01")
+        episteme = Episteme.__new__(Episteme)                      # the screens only need the database and the settings
+        episteme.data = database
+        episteme.settings = EpistemeSettings(_env_file=None, obsidian=ObsidianSettings(vault_root=vault_root), data=database.settings)
+        sync(database, vault_root)
+        database.check_health()
+        for screen in discover():
+            loaded = screen.factory(episteme).load() if hasattr(screen.factory(episteme), "load") else None
+            assert loaded is not None or screen.name == "sql", f"the {screen.name} screen loaded nothing"

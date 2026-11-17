@@ -32,7 +32,7 @@ escapes, and it is hidden wherever Episteme shows the URL). Connections are encr
 certificate is checked, as Azure SQL requires. For a local server with a self-signed certificate add
 `?encrypt=no&trust_server_certificate=yes`.
 
-The tables and views are created by the same migrations as everywhere (`schema_history` table, versions `V1` to `V10`), written in T-SQL. Nothing needs to be
+The tables and views are created by the same migrations as everywhere (`schema_history` table, versions `V1` and up), written in T-SQL. Nothing needs to be
 prepared: starting from an empty database, the first connection creates every table, view and function.
 
 ## Creating the database
@@ -99,7 +99,10 @@ The tables, views and their columns have the same names. What SQL Server cannot 
 | Path and name comparison | exact | exact (binary collation), so `Note.md` and `note.md` are different notes |
 | Views | read-only | a simple view over one table can be written to: Episteme never does, and the SQL console accepts only reading statements |
 
-SQL typed in `episteme db query` and the TUI is T-SQL: `SELECT TOP 10 ...`, not `LIMIT 10`.
+SQL typed in `episteme db query` and the TUI is T-SQL: `SELECT TOP 10 ...`, not `LIMIT 10`. The same goes for the one condition
+you can hand to a command, `episteme anki cards --where "..."`: it is put in the query as it is, in the dialect of the engine you use.
+Everything else the commands and the TUI ask the database (listing notes, finding cards by tag or deck, the alerts) is written
+once per engine inside Episteme, so it works the same on both.
 
 !!! note "UTC"
     Azure SQL runs in UTC. `is_overdue` on a task due today therefore turns true when the day changes in

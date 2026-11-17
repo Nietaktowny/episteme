@@ -539,6 +539,92 @@ class Database:
         for row in self.engine.iterate(self.queries["alerts_select"], {"min_rank": rank, "rule_id": rule_id}):
             yield Alert(**row)
 
+    def anki_today(self) -> list[Row]:
+        """The ``anki_today`` view's rows (the current Anki day; none before the first Anki sync). For the TUI."""
+        return self.engine.fetch_all(self.queries["tui_anki_today"])
+
+    def anki_decks(self) -> list[Row]:
+        """The ``anki_deck_summary`` view's rows: one per deck. For the TUI."""
+        return self.engine.fetch_all(self.queries["tui_anki_decks"])
+
+    def search_note_paths(self, search: str | None = None) -> list[str]:
+        """The paths of the notes whose path or type contains ``search`` (any case), sorted; every path when ``search`` is ``None``.
+
+        Examples:
+            >>> database = Database(DataSettings(url=":memory:"))
+            >>> database.search_note_paths("evergreen")
+            []
+            >>> database.close()
+        """
+        return [row["path"] for row in self.engine.fetch_all(self.queries["note_paths_search"], {"search": search})]
+
+    def list_notes(self, search: str | None = None, note_type: str | None = None) -> list[Row]:
+        """The notes (path, type, status, modified_at) whose path contains ``search`` (any case) and whose type is ``note_type``,
+        newest first. ``None`` leaves a filter out.
+
+        Examples:
+            >>> database = Database(DataSettings(url=":memory:"))
+            >>> database.list_notes("anything", "evergreen")
+            []
+            >>> database.close()
+        """
+        return self.engine.fetch_all(self.queries["notes_list"], {"search": search, "type": note_type})
+
+    def count_anki_cards(self) -> int:
+        """How many Anki cards are stored (0 before the first Anki sync)."""
+        return self.engine.fetch_one(self.queries["anki_cards_count"])["count"]
+
+    def find_anki_cards(
+        self,
+        tags: Iterable[str] = (),
+        deck: str | None = None,
+        state: str | None = None,
+        due: bool = False,
+        leeches: bool = False,
+        where: str | None = None,
+    ) -> list[Row]:
+        """Cards of ``anki_card_details`` (``card_id``, ``note_id``, ``deck_name``, ``state``, ``due_date``, ``interval_days``,
+        ``lapses``, ``tags`` as a list) that meet all the conditions, soonest due first.
+
+        Args:
+            tags: The note must have each of these tags, or a tag below it (``lang`` matches ``lang::pl``), in any case.
+            deck: The card is in this deck or one below it.
+            state: ``new``, ``learning``, ``review`` or ``relearning``.
+            due: Only cards due now.
+            leeches: Only leeches.
+            where: Another condition on the view, in the SQL of the engine in use. It is put in the query as it is: only
+                pass what the user of the database may run anyway.
+
+        Examples:
+            >>> database = Database(DataSettings(url=":memory:"))
+            >>> database.find_anki_cards(tags=["lang"], deck="Polish", due=True)
+            []
+            >>> database.close()
+        """
+        conditions: list[str] = []
+        params: dict[str, Any] = {}
+        for index, tag in enumerate(tags):
+            conditions.append(self.queries["anki_cards_tag"].replace("$tag", f"$tag{index}"))
+            params[f"tag{index}"] = tag
+        if deck:
+            conditions.append(self.queries["anki_cards_deck"])
+            params["deck"] = deck
+        if state:
+            conditions.append("AND state = $state")
+            params["state"] = state
+        if due:
+            conditions.append("AND is_due = 1")
+        if leeches:
+            conditions.append("AND is_leech = 1")
+        if where:
+            conditions.append(f"AND ({where})")
+        sql = self.queries["anki_cards_find"].replace("{conditions}", "\n  ".join(line for text in conditions for line in text.splitlines() if not line.startswith("--")))
+        rows = self.engine.fetch_all(sql, params)
+        for row in rows:                       # SQL Server keeps a list as JSON text
+            if isinstance(row["tags"], str):
+                row["tags"] = json.loads(row["tags"])
+        return rows
+
     def indexes(self) -> list[str]:
         """Names of the secondary indexes in the database.
 

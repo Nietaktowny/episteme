@@ -33,8 +33,7 @@ def notes(
 ) -> None:
     """List notes from the database (as of the last sync), newest first."""
     state = state_of(ctx)
-    sql = "SELECT path, type, status, modified_at FROM vault_notes WHERE ($search IS NULL OR path ILIKE '%' || $search || '%') AND ($type IS NULL OR type = $type) ORDER BY modified_at DESC NULLS LAST, path"
-    rows = [dict(row) for row in state.episteme.data.engine.fetch_all(sql, {"search": search, "type": note_type})]
+    rows = state.episteme.data.list_notes(search, note_type)
     shown = rows[:limit] if limit else rows
     emit(state, rows, table(f"{len(rows)} note(s)" + (f", showing {len(shown)}" if len(shown) < len(rows) else ""),
                             ["Path", "Type", "Status", "Modified"], [[r["path"], r["type"], r["status"], r["modified_at"]] for r in shown]))

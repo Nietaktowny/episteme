@@ -13,7 +13,9 @@ from episteme.tui.widgets import Pane, QueryTable, database_lock, rows_of
 class SqlPane(Pane):
     def compose(self) -> ComposeResult:
         yield Static(id="views")
-        yield Input(placeholder="SELECT * FROM overdue_tasks LIMIT 20   (Enter to run)", id="sql")
+        settings = self.episteme.settings.data
+        table = f"{settings.schema_name}.overdue_tasks" if settings.engine == "mssql" else "overdue_tasks"      # SQL Server: name the schema
+        yield Input(placeholder=f"SELECT * FROM {table}   (Enter to run)", id="sql")
         yield QueryTable("Result", id="result")
 
     def load(self):

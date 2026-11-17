@@ -13,8 +13,8 @@ class AnkiPane(Pane):
         yield QueryTable("Decks", id="decks")
 
     def load(self):
-        engine = self.episteme.data.engine
-        return engine.fetch_all("SELECT * FROM anki_today"), engine.fetch_all("SELECT * FROM anki_deck_summary")
+        data = self.episteme.data
+        return data.anki_today(), data.anki_decks()
 
     def show(self, loaded) -> None:
         today, decks = loaded

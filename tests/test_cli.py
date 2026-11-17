@@ -409,3 +409,43 @@ class TestNotify:
         result = run(env, "health", "notify")
         assert result.exit_code == 1 and "ALERTS__SINKS" in result.output
         assert "no sinks" in " ".join(run(env, "doctor").output.split())
+
+
+class TestTables:
+    """The table helper shows text as it is, and a styled cell as styled."""
+
+    @staticmethod
+    def ansi(renderable) -> str:
+        from io import StringIO
+
+        from rich.console import Console
+
+        console = Console(file=StringIO(), width=80, force_terminal=True, color_system="standard")
+        console.print(renderable)
+        return console.file.getvalue()
+
+    def test_a_styled_cell_is_colored_and_shows_no_markup(self):
+        from rich.text import Text
+
+        from episteme.cli.output import table
+
+        shown = self.ansi(table("t", ["Severity"], [[Text("error", style="red")], [Text("warn", style="yellow")]]))
+        assert "\x1b[31merror" in shown and "\x1b[33mwarn" in shown
+        assert "[red]" not in shown and "[/]" not in shown
+
+    def test_text_that_looks_like_markup_stays_text(self):
+        from episteme.cli.output import table
+
+        assert "[red]x[/]" in self.ansi(table("t", ["Note"], [["[red]x[/]"]]))
+
+    def test_the_alerts_are_colored_by_severity(self, env):
+        from rich.console import Console
+        from io import StringIO
+
+        from episteme.cli.commands.health import _STYLE
+        from episteme.cli.output import table
+        from rich.text import Text
+
+        assert set(_STYLE) == {"error", "warn", "info"}
+        shown = self.ansi(table("alerts", ["Severity"], [[Text(severity, style=style)] for severity, style in _STYLE.items()]))
+        assert "[red]" not in shown and "[yellow]" not in shown and "[cyan]" not in shown

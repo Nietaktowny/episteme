@@ -8,6 +8,7 @@ from pydantic_core import to_json
 from rich.console import Console, RenderableType
 from rich.markup import escape
 from rich.table import Table
+from rich.text import Text
 
 from episteme.cli.state import CliState
 
@@ -32,12 +33,16 @@ def emit(state: CliState, data: Any, text: RenderableType | None = None) -> None
 
 
 def table(title: str, columns: list[str], rows: list[list[Any]]) -> Table:
-    """A table in the style of the models' own (``__rich__``)."""
+    """A table in the style of the models' own (``__rich__``).
+
+    Cells are shown as they are: text that looks like markup (a note called ``[x]``) is escaped. To style a cell, pass a
+    :class:`rich.text.Text`, which is shown as it is.
+    """
     result = Table(title=title, show_header=True, header_style="bold magenta")
     for column in columns:
         result.add_column(column, overflow="fold")
     for row in rows:
-        result.add_row(*("" if cell is None else escape(str(cell)) for cell in row))
+        result.add_row(*("" if cell is None else cell if isinstance(cell, Text) else escape(str(cell)) for cell in row))
     return result
 
 

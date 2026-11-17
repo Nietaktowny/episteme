@@ -17,9 +17,6 @@ from episteme.tui.tree import Note, NoteTree
 from episteme.tui.widgets import Pane, QueryTable
 
 _OPEN = (TaskState.TODO, TaskState.IN_PROGRESS)
-_NOTES_SQL = """SELECT path FROM vault_notes
-WHERE $search IS NULL OR path ILIKE '%' || $search || '%' OR type ILIKE '%' || $search || '%'
-ORDER BY path"""
 _NOTE_LIMIT_BYTES = 200_000
 
 
@@ -64,7 +61,7 @@ class ObsidianPane(Pane):
 
     def load(self):
         data = self.episteme.data
-        paths = [row["path"] for row in data.engine.fetch_all(_NOTES_SQL, {"search": self.search})]
+        paths = data.search_note_paths(self.search)
         return paths, list(data.iter_tasks())
 
     def show(self, loaded) -> None:

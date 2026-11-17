@@ -12,10 +12,8 @@ class HealthPane(Pane):
         yield QueryTable("Open alerts", id="alerts")
 
     def load(self):
-        return self.episteme.data.engine.fetch_all(
-            "SELECT severity, rule_id, rule_name, entity_id, detail, days_open, remediation FROM open_alerts "
-            "ORDER BY severity_rank DESC, days_open DESC, entity_id"
-        )
+        return [alert.model_dump(include={"severity", "rule_id", "rule_name", "entity_id", "detail", "days_open", "remediation"})
+                for alert in self.episteme.data.iter_alerts()]
 
     def show(self, loaded) -> None:
         self.query_one("#alerts", QueryTable).fill(*rows_of([dict(row) for row in loaded]))

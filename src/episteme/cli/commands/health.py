@@ -8,7 +8,7 @@ opened and what was resolved (see :meth:`episteme.Episteme.check_health`); a syn
 from typing import Annotated
 
 import typer
-from rich.markup import escape
+from rich.text import Text
 
 from episteme.cli.output import emit, fail, table
 from episteme.cli.registry import CheckResult, Extension
@@ -39,9 +39,8 @@ def health(
         return
     state = state_of(ctx)
     alerts = list(state.episteme.data.iter_alerts(_severity(severity), rule))
-    rows = [[f"[{_STYLE[a.severity]}]{a.severity}[/]", a.rule_id, a.rule_name, a.entity_id, a.detail, a.days_open] for a in alerts]
+    rows = [[Text(a.severity, style=_STYLE[a.severity]), a.rule_id, a.rule_name, a.entity_id, a.detail, a.days_open] for a in alerts]
     text = table(f"{len(alerts)} open alert(s)", ["Severity", "Rule", "Name", "Note", "Detail", "Days"], rows)
-    text.columns[0].no_wrap = True
     if not alerts:
         text = "[green]No open alerts.[/]"
     emit(state, alerts, text)
@@ -79,7 +78,7 @@ def rules(ctx: typer.Context) -> None:
     state = state_of(ctx)
     emit(state, [rule.model_dump(mode="json") for rule in RULES.values()],
          table(f"{len(RULES)} rule(s)", ["Id", "Name", "Severity", "Active", "Description"],
-               [[r.id, r.name, r.severity, "yes" if r.is_active else "", r.description] for r in RULES.values()]))
+               [[r.id, r.name, Text(r.severity.value, style=_STYLE[r.severity.value]), "yes" if r.is_active else "", r.description] for r in RULES.values()]))
 
 
 def checks(episteme: Episteme) -> list[CheckResult]:

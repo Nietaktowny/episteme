@@ -70,35 +70,17 @@ def cards(
     """Find cards by tag, deck, state or text. Scheduling comes from the database (as of the last Anki sync)."""
     state = state_of(ctx)
     episteme = state.episteme
-    conditions, params = [], {}
-    for index, name in enumerate(tag or []):
-        conditions.append(f"len(list_filter(tags, lambda t: lower(t) = lower($tag{index}) OR starts_with(lower(t), lower($tag{index}) || '::'))) > 0")
-        params[f"tag{index}"] = name
-    if deck:
-        conditions.append("(deck_name = $deck OR starts_with(deck_name, $deck || '::'))")
-        params["deck"] = deck
-    if card_state:
-        if card_state not in _STATES:
-            raise fail(f"'{card_state}' is not a state; use {', '.join(_STATES)}.")
-        conditions.append("state = $state")
-        params["state"] = card_state
-    if due:
-        conditions.append("is_due")
-    if leeches:
-        conditions.append("is_leech")
-    if where:
-        if ";" in where:
-            raise fail("--where takes one condition, without ';'.")
-        conditions.append(f"({where})")
-    sql = "SELECT card_id, note_id, deck_name, state, due_date, interval_days, lapses, tags FROM anki_card_details"
-    sql += (" WHERE " + " AND ".join(conditions) if conditions else "") + " ORDER BY due_date NULLS LAST, card_id"
+    if card_state and card_state not in _STATES:
+        raise fail(f"'{card_state}' is not a state; use {', '.join(_STATES)}.")
+    if where and ";" in where:
+        raise fail("--where takes one condition, without ';'.")
     needs_text = bool(query) or show_content
-    if not needs_text and limit:
-        sql += f" LIMIT {int(limit)}"
     try:
-        rows = [dict(row) for row in episteme.data.engine.fetch_all(sql, params)]
+        rows = episteme.data.find_anki_cards(tags=tag or [], deck=deck, state=card_state, due=due, leeches=leeches, where=where)
     except Exception as error:
         raise fail(f"{type(error).__name__}: {error}") from None
+    if not needs_text and limit:
+        rows = rows[:limit]
     texts: dict[int, str] = {}
     if needs_text:
         try:
@@ -115,7 +97,7 @@ def cards(
         if show_content:
             for row in rows:
                 row["content"] = texts.get(row["note_id"], "")
-    if not rows and not episteme.data.engine.fetch_one("SELECT 1 AS x FROM anki_cards LIMIT 1"):
+    if not rows and not episteme.data.count_anki_cards():
         errors.print("[yellow]No Anki data in the database yet: run `episteme sync anki`.[/]")
     columns = ["card_id", "deck_name", "state", "due_date", "interval_days", "lapses", "tags"] + (["content"] if show_content else [])
     emit(state, rows, table(f"{len(rows)} card(s)", columns, [[row[c] for c in columns] for row in rows]))
