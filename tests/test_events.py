@@ -187,7 +187,7 @@ class TestTheCatalogs:
         assert database.rule_versions()["K1"] == 2 and database.rule_versions()["K2"] == 1
         prefix = "" if database.engine.name == "duckdb" else f"[{database.settings.schema_name}]."
         k1 = database.engine.fetch_all(f"SELECT rule_version, parameters, valid_to FROM {prefix}dim_rule WHERE rule_id = 'K1' ORDER BY rule_version")
-        assert [json.loads(r["parameters"]) for r in k1] == [{"days": 14}, {"days": 30}]
+        assert [json.loads(r["parameters"]) for r in k1] == [{"days": 60}, {"days": 30}]
         assert k1[0]["valid_to"] is not None and k1[1]["valid_to"] is None
         database._sync_catalogs({"K1": {"days": 30}})        # the same limit again: nothing new
         assert database.rule_versions()["K1"] == 2
@@ -402,8 +402,8 @@ class TestHealthLifecycle:
     @pytest.fixture
     def vault(self, vault_root: Path) -> Path:
         write(vault_root, "p.md", '---\ntype: project\nstatus: actve\ncreated: 2026-01-01\nlane: "[[Nowhere]]"\n---\nP')
-        write(vault_root, "w.md", "---\ntype: project\nstatus: active\n---\nW")
-        write(vault_root, "40_Archive/old.md", "---\ntype: nonsense\n---\nO")
+        write(vault_root, "w.md", "---\ntype: project\nstatus: active\ntemplate_version: 1.1\n---\nW")
+        write(vault_root, "40_Archive/old.md", "---\ntype: nonsense\ntemplate_version: 1.1\n---\nO")
         return vault_root
 
     def test_the_first_check_opens_everything_as_baseline_and_the_archive_is_not_an_alert(self, database: Database, vault: Path):

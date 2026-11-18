@@ -22,7 +22,7 @@ from enum import StrEnum
 from importlib.metadata import PackageNotFoundError, version
 from typing import Any
 
-from pydantic import BaseModel, ConfigDict, Field, field_validator
+from pydantic import BaseModel, ConfigDict, Field, ValidationInfo, field_validator
 
 
 class System(StrEnum):
@@ -151,6 +151,11 @@ folder-to-type mapping, which is a setting and not in the database; T2 is only k
 duplicate ids, because only the first task of a duplicate is stored."""
 
 
+NOT_ESCALATED = {"K1", "K2", "K3"}
+"""The rules rule E1 leaves alone: they report a backlog (notes waiting for Anki, placeholders waiting to be written), which
+would turn every one of its alerts into an error after ``days`` days. They keep the severity of their rule."""
+
+
 def _rules(*rules: Rule) -> dict[str, Rule]:
     return {r.id: r.model_copy(update={"is_active": r.id not in NOT_EVALUATED}) for r in rules}
 
@@ -212,11 +217,11 @@ EVENT_TYPES: dict[str, EventType] = _event_types(
 
 RULES: dict[str, Rule] = _rules(
     # --- A. Violations of the property registry (the rules of the property_issues view) -----------------------
-    Rule(id="R1", name="unknown_type", group="registry", severity=Severity.ERROR,
-         description="`type` is not one of the registered note types (pkm_design, lane, project, evergreen, source, daily_note, weekly_review, weekly_status, meeting, roadmap, words_list, template).",
+    Rule(id="R1", name="unknown_type", group="registry", severity=Severity.ERROR, logic_version=2,
+         description="`type` is not one of the registered note types (pkm_design, lane, project, evergreen, source, daily_note, weekly_review, weekly_status, meeting, roadmap, words_list, template). Notes in `_system/` are not checked.",
          remediation="Fix the typo, or register the new type in Properties.md and in the rule."),
-    Rule(id="R2", name="missing_created", group="registry", severity=Severity.WARN,
-         description="A typed, non-empty note has no `created` date.",
+    Rule(id="R2", name="missing_created", group="registry", severity=Severity.WARN, logic_version=2,
+         description="A typed, non-empty note has no `created` date. Not checked: templates, notes in `_system/`, and notes whose `template_version` is missing or below 1.1 (they predate the property).",
          remediation="Add `created: YYYY-MM-DD` to the frontmatter."),
     Rule(id="R3", name="invalid_status", group="registry", severity=Severity.ERROR,
          description="`status` is not allowed for the note's type (project: active/paused/done/abandoned; meeting: inbox/processed; pkm_design: draft/active/frozen/deprecated).",
@@ -227,11 +232,11 @@ RULES: dict[str, Rule] = _rules(
     Rule(id="R5", name="closed_date_on_open_project", group="registry", severity=Severity.WARN,
          description="A project is active or paused but already has a `closed_date`.",
          remediation="Remove `closed_date`, or change the status to done or abandoned."),
-    Rule(id="R6", name="invalid_date", group="registry", severity=Severity.ERROR,
-         description="A date property (created, closed_date, last_review, consumed_on, start_range, end_range, ankified_date) is not written YYYY-MM-DD.",
+    Rule(id="R6", name="invalid_date", group="registry", severity=Severity.ERROR, logic_version=3,
+         description="A date property (created, closed_date, last_review, consumed_on, start_range, end_range, ankified_date) is not written YYYY-MM-DD. Templates are not checked: they hold {{placeholders}}. An empty value (blank or `[]`) is no value, not an invalid date.",
          remediation="Rewrite the value as YYYY-MM-DD."),
-    Rule(id="R7", name="deprecated_property", group="registry", severity=Severity.INFO,
-         description="The note still uses a retired property (updated, lane_tag, related, area, ankified).",
+    Rule(id="R7", name="deprecated_property", group="registry", severity=Severity.INFO, logic_version=2,
+         description="The note still uses a retired property (updated, lane_tag, related, area, ankified). Templates are not checked.",
          remediation="Remove the property, or move its value to the property that replaced it."),
     Rule(id="R8", name="lane_not_a_link", group="registry", severity=Severity.WARN,
          description="`lane` is written as plain text instead of a [[wikilink]].",
@@ -247,12 +252,12 @@ RULES: dict[str, Rule] = _rules(
          remediation="Point the link at an existing note, or create the parent."),
     Rule(id="R12", name="missing_kind", group="registry", severity=Severity.WARN, applies_to="note",
          description="A source has no `kind`.",
-         remediation="Set `kind` to article, book, docs, video or course."),
-    Rule(id="R13", name="invalid_kind", group="registry", severity=Severity.ERROR,
-         description="A source's `kind` is not article, book, docs, video or course.",
+         remediation="Set `kind` to article, book, docs, video, course or chat."),
+    Rule(id="R13", name="invalid_kind", group="registry", severity=Severity.ERROR, logic_version=2,
+         description="A source's `kind` is not article, book, docs, video, course or chat.",
          remediation="Use one of the registered kinds."),
-    Rule(id="R14", name="invalid_year", group="registry", severity=Severity.WARN,
-         description="A source's `year` is not an integer.",
+    Rule(id="R14", name="invalid_year", group="registry", severity=Severity.WARN, logic_version=2,
+         description="A source's `year` is not an integer. An empty value (blank or `[]`) is no value, not an invalid year.",
          remediation="Write the year as a plain number, e.g. `year: 2024`."),
     Rule(id="R15", name="topics_not_a_list", group="registry", severity=Severity.WARN,
          description="A source's `topics` is not a list.",
@@ -260,8 +265,8 @@ RULES: dict[str, Rule] = _rules(
     Rule(id="R16", name="invalid_review_cycle", group="registry", severity=Severity.ERROR,
          description="`review_cycle` is not weekly or monthly.",
          remediation="Use weekly or monthly."),
-    Rule(id="R17", name="missing_range", group="registry", severity=Severity.WARN,
-         description="A weekly review lacks `start_range` or `end_range`.",
+    Rule(id="R17", name="missing_range", group="registry", severity=Severity.WARN, logic_version=2,
+         description="A weekly review lacks `start_range` or `end_range`. Reviews whose `template_version` is missing or below 1.1 predate the range and are not checked.",
          remediation="Add both dates."),
     Rule(id="R18", name="inverted_range", group="registry", severity=Severity.ERROR,
          description="A weekly review's `start_range` is after its `end_range`.",
@@ -270,24 +275,21 @@ RULES: dict[str, Rule] = _rules(
          description="An evergreen's `domain` is not lowercase_snake_case.",
          remediation="Rewrite the domain, e.g. `distributed_systems`."),
     # --- B. Structure -----------------------------------------------------------------------------------------
-    Rule(id="S1", name="duplicate_note_name", group="structure", severity=Severity.ERROR,
-         description="Two notes share a name, so wikilinks to it are ambiguous.",
-         remediation="Rename one of them."),
-    Rule(id="S2", name="duplicate_content", group="structure", severity=Severity.INFO,
-         description="Several non-empty notes have identical content (body_hash).",
+    Rule(id="S2", name="duplicate_content", group="structure", severity=Severity.INFO, logic_version=2,
+         description="Several non-empty notes have identical content (body_hash). Templates are not checked: consecutive versions are near copies.",
          remediation="Delete the copy, or merge the notes."),
-    Rule(id="S3", name="untyped_note", group="structure", severity=Severity.WARN,
-         description="A note outside the archive has no type, written or implied by its folder.",
+    Rule(id="S3", name="untyped_note", group="structure", severity=Severity.WARN, logic_version=2,
+         description="A note outside the archive has no type, written or implied by its folder. Notes in `_system/` and in `00_Inbox/` (unstructured capture) are not checked.",
          remediation="Add a `type`, or move the note to the folder of its type."),
     Rule(id="S4", name="type_folder_mismatch", group="structure", severity=Severity.WARN,
          description="The type written in the note differs from the type its folder implies. Not evaluated yet: the folder-to-type mapping is a setting of the vault, not in the database.",
          remediation="Move the note, or correct its type."),
-    Rule(id="S5", name="unexpected_empty_note", group="structure", severity=Severity.INFO,
-         description="A zero-byte note outside the Evergreen placeholders.",
+    Rule(id="S5", name="unexpected_empty_note", group="structure", severity=Severity.INFO, logic_version=2,
+         description="A zero-byte note outside the Evergreen placeholders. Templates are not checked.",
          remediation="Write the note, or delete it."),
     # --- C. Knowledge processing ------------------------------------------------------------------------------
     Rule(id="K1", name="evergreen_never_ankified", group="knowledge", severity=Severity.WARN, kind=RuleKind.THRESHOLD,
-         parameters={"days": 14},
+         parameters={"days": 60},
          description="An evergreen has gone `days` days since `created` without ever being processed into Anki.",
          remediation="Process the note into Anki and set `ankified_date`."),
     Rule(id="K2", name="evergreen_stale_anki", group="knowledge", severity=Severity.INFO, kind=RuleKind.THRESHOLD,
@@ -350,9 +352,9 @@ RULES: dict[str, Rule] = _rules(
          description="There has been no health check for `hours` hours.",
          remediation="Check that the scheduler runs the health check."),
     # --- G. Questions asked of the event log ------------------------------------------------------------------
-    Rule(id="E1", name="violation_escalation", group="events", severity=Severity.WARN, kind=RuleKind.EVENT_QUERY,
+    Rule(id="E1", name="violation_escalation", group="events", severity=Severity.WARN, kind=RuleKind.EVENT_QUERY, logic_version=2,
          parameters={"days": 14},
-         description="A violation has stayed open for `days` days or more, so its severity is raised one level (info to warn, warn to error). The health check applies it and records a health.severity_changed event.",
+         description="A violation has stayed open for `days` days or more, so its severity is raised one level (info to warn, warn to error). The health check applies it and records a health.severity_changed event. The Anki backlog rules (K1, K2, K3) are never escalated: a backlog grows slowly and is not a failure to act.",
          remediation="Fix the underlying violation."),
     Rule(id="E2", name="violation_spike", group="events", severity=Severity.WARN, kind=RuleKind.EVENT_QUERY,
          applies_to="system", parameters={"count": 20, "hours": 24},
@@ -452,8 +454,9 @@ class Event(BaseModel):
 
     @field_validator("rule_id")
     @classmethod
-    def _known_rule(cls, value: str | None) -> str | None:
-        if value is not None and value not in RULES:
+    def _known_rule(cls, value: str | None, info: ValidationInfo) -> str | None:
+        removed = info.data.get("event_type") == "health.violation_resolved" and (info.data.get("payload") or {}).get("reason") == "rule_removed"
+        if value is not None and value not in RULES and not removed:     # closing a removed rule's violation is the one use of an unknown rule
             raise ValueError(f"Unknown rule '{value}'.")
         return value
 

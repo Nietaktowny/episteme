@@ -29,7 +29,7 @@ class TestWhichAlertsAreStillToSend:
     @pytest.fixture
     def checked(self, database: Database, vault_root: Path) -> Database:
         write(vault_root, "p.md", '---\ntype: project\nstatus: actve\ncreated: 2026-01-01\n---\nP')        # R3, error
-        write(vault_root, "w.md", "---\ntype: project\nstatus: active\n---\nW")                            # R2, warn
+        write(vault_root, "w.md", "---\ntype: project\nstatus: active\ntemplate_version: 1.1\n---\nW")                            # R2, warn
         write(vault_root, "40_Archive/old.md", "---\ntype: nonsense\n---\nO")                              # the archive: no alert
         sync(database, vault_root)
         database.check_health()
@@ -40,7 +40,7 @@ class TestWhichAlertsAreStillToSend:
         assert names(checked, "s", baseline=True) == [("R3", "p.md"), ("R2", "w.md")]          # most severe first, never the archive
 
     def test_a_new_violation_is_sent_to_a_sink_once(self, checked: Database, vault_root: Path):
-        write(vault_root, "n.md", "---\ntype: project\nstatus: active\n---\nN")
+        write(vault_root, "n.md", "---\ntype: project\nstatus: active\ntemplate_version: 1.1\n---\nN")
         sync(checked, vault_root)
         checked.check_health()
         (alert,) = checked.pending_alerts("s", "info", 10)
@@ -53,7 +53,7 @@ class TestWhichAlertsAreStillToSend:
     def test_a_sink_only_gets_its_severity_and_a_limited_number(self, checked: Database, vault_root: Path):
         for number in range(3):
             write(vault_root, f"n{number}.md", "---\ntype: project\nstatus: actve\ncreated: 2026-01-01\n---\nN")
-        write(vault_root, "m.md", "---\ntype: project\nstatus: active\n---\nM")
+        write(vault_root, "m.md", "---\ntype: project\nstatus: active\ntemplate_version: 1.1\n---\nM")
         sync(checked, vault_root)
         checked.check_health()
         assert {a for _, a in names(checked, "s", "error")} == {"n0.md", "n1.md", "n2.md"}
@@ -61,7 +61,7 @@ class TestWhichAlertsAreStillToSend:
         assert names(checked, "s", "info", limit=2)[0][0] == "R3"             # the most severe go first
 
     def test_a_failed_delivery_is_not_a_delivery(self, checked: Database, vault_root: Path):
-        write(vault_root, "n.md", "---\ntype: project\nstatus: active\n---\nN")
+        write(vault_root, "n.md", "---\ntype: project\nstatus: active\ntemplate_version: 1.1\n---\nN")
         sync(checked, vault_root)
         checked.check_health()
         (alert,) = checked.pending_alerts("s", "info", 10)
@@ -91,7 +91,7 @@ class TestWhichAlertsAreStillToSend:
         assert (again.entity_id, again.severity, again.violation_id) == ("late2", "error", alert.violation_id)
 
     def test_a_resolved_alert_is_not_sent(self, checked: Database, vault_root: Path):
-        write(vault_root, "n.md", "---\ntype: project\nstatus: active\n---\nN")
+        write(vault_root, "n.md", "---\ntype: project\nstatus: active\ntemplate_version: 1.1\n---\nN")
         sync(checked, vault_root)
         checked.check_health()
         write(vault_root, "n.md", "---\ntype: project\nstatus: active\ncreated: 2026-01-01\n---\nN")
@@ -145,7 +145,7 @@ def received(tmp_path: Path, name: str = "file") -> list[dict]:
     return [json.loads(line) for line in log.read_text().splitlines() if line] if log.exists() else []
 
 
-def violate(episteme: Episteme, name: str, text: str = "---\ntype: project\nstatus: active\n---\nN") -> None:
+def violate(episteme: Episteme, name: str, text: str = "---\ntype: project\nstatus: active\ntemplate_version: 1.1\n---\nN") -> None:
     (episteme.settings.obsidian.vault_root / name).write_text(text)
 
 
@@ -230,7 +230,7 @@ class TestSinks:
         episteme = make_episteme(tmp_path, sinks=[command_sink(tmp_path, min_severity="info")], limit=2)
         episteme.sync_obsidian()
         for number in range(5):
-            violate(episteme, f"n{number}.md", f"---\ntype: project\nstatus: active\n---\nNote {number}")
+            violate(episteme, f"n{number}.md", f"---\ntype: project\nstatus: active\ntemplate_version: 1.1\n---\nNote {number}")
         episteme.sync_obsidian()
         assert len(received(tmp_path)) == 2
         episteme.sync_obsidian()

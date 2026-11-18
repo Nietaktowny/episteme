@@ -371,7 +371,7 @@ class TestUpgradingADatabaseWithNotes:
         real = Path(str(DuckDBEngine(":memory:").sql_dir))
         old = tmp_path / "old_sql"
         shutil.copytree(real, old)
-        for later in ("V10__notes_type_and_created.sql", "V11__create_events.sql", "V12__create_event_views.sql", "V13__create_health_views.sql", "V14__create_rule_detectors.sql", "V15__create_action_views.sql"):
+        for later in ("V10__notes_type_and_created.sql", "V11__create_events.sql", "V12__create_event_views.sql", "V13__create_health_views.sql", "V14__create_rule_detectors.sql", "V15__create_action_views.sql", "V16__health_scope.sql", "V17__chat_source_kind.sql", "V18__empty_list_is_no_value.sql"):
             (old / "migrations" / later).unlink()
         engine = OldDuckDB(str(tmp_path / "old.duckdb"))
         engine.sql_dir_override = old
@@ -397,7 +397,7 @@ class TestUpgradingADatabaseWithNotes:
         settings = Settings(engine="mssql", url=mssql_url, create_database=True)
         old = tmp_path / "old_sql"
         shutil.copytree(Path(str(MSSQLEngine.__new__(MSSQLEngine).sql_dir)), old)  # sql_dir needs no connection
-        for later in ("V10__notes_type_and_created.sql", "V11__create_events.sql", "V12__create_event_views.sql", "V13__create_health_views.sql", "V14__create_rule_detectors.sql", "V15__create_action_views.sql"):
+        for later in ("V10__notes_type_and_created.sql", "V11__create_events.sql", "V12__create_event_views.sql", "V13__create_health_views.sql", "V14__create_rule_detectors.sql", "V15__create_action_views.sql", "V16__health_scope.sql", "V17__chat_source_kind.sql", "V18__empty_list_is_no_value.sql"):
             (old / "migrations" / later).unlink()
 
         class OldEngine(MSSQLEngine):

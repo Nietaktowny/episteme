@@ -15,7 +15,7 @@ from anki_collection import WARSAW, sample_collection
 from episteme import Episteme
 from episteme.anki import AnkiSnapshot
 from episteme.database import Database
-from episteme.models.events import RULES, Event
+from episteme.models.events import RULES, Event, Rule, Severity
 from episteme.obsidian import ObsidianVault
 from episteme.settings import DataSettings, EpistemeSettings, ObsidianSettings
 from test_events import _rows, _table, database, vault_root, write  # noqa: F401 - fixtures of the events tests
@@ -49,7 +49,7 @@ def front(**fields) -> str:
 
 
 class TestStructure:
-    def test_duplicate_names_duplicate_content_untyped_and_empty_notes(self, database: Database, vault_root: Path):
+    def test_duplicate_content_untyped_and_empty_notes(self, database: Database, vault_root: Path):
         write(vault_root, "a/dup.md", front(type="project", created="2026-01-01") + " A")
         write(vault_root, "b/dup.md", front(type="project", created="2026-01-01") + " B")
         write(vault_root, "c1.md", front(type="project", created="2026-01-01"))
@@ -60,7 +60,8 @@ class TestStructure:
         write(vault_root, "30_Resources/Evergreen/Gap.md", "")
         sync(database, vault_root)
         assert found(database, "R1") == set()
-        assert found(database, "S1") == {("S1", "a/dup.md"), ("S1", "b/dup.md")}
+        assert found(database, "S1") == set()                                       # S1 (duplicate names) was removed
+        assert "S1" not in RULES
         assert found(database, "S2") == {("S2", "c1.md"), ("S2", "c2.md")}
         assert found(database, "S3") == {("S3", "u.md"), ("S3", "e.md")}         # the archive may be untyped
         assert found(database, "S5") == {("S5", "e.md")}                          # an evergreen placeholder is not stray
@@ -204,12 +205,103 @@ class TestQuestionsAskedOfTheLog:
         assert found(database, "E5") == {("E5", "vault")}
 
 
+class TestWhatTheRulesDoNotLookAt:
+    """Notes that are not meant to follow the registry never open an alert (see V16__health_scope)."""
+
+    def test_templates_are_exempt_from_the_registry_and_content_rules(self, database: Database, vault_root: Path):
+        write(vault_root, "99_Templates/v1.0_a.md", front(type="template", created="{{date:YYYY-MM-DD}}", updated="x") + " same")
+        write(vault_root, "99_Templates/v1.1_a.md", front(type="template", created="{{date:YYYY-MM-DD}}", updated="x") + " same")
+        write(vault_root, "99_Templates/v1.0_readme.md", "")
+        write(vault_root, "99_Templates/v1.0_untyped.md", "no type, no created")
+        write(vault_root, "p/a.md", front(type="project", created="not-a-date", updated="x", template_version=1.1) + " control a")     # control
+        write(vault_root, "p/b.md", front(type="project", created="2026-01-01", template_version=1.1) + " control b")
+        sync(database, vault_root)
+        assert {(rule, path) for rule, path in found(database) if path.startswith("99_Templates")} == set()
+        assert {rule for rule, path in found(database) if path == "p/a.md"} == {"R6", "R7"}
+
+    def test_system_notes_are_exempt_from_type_and_created_rules(self, database: Database, vault_root: Path):
+        write(vault_root, "_system/audit.md", front(type="audit", template_version=1.1) + " one")
+        write(vault_root, "_system/queue.md", "no frontmatter, one")
+        write(vault_root, "other/audit2.md", front(type="audit", template_version=1.1) + " two")
+        write(vault_root, "other/queue2.md", "no frontmatter, two")
+        sync(database, vault_root)
+        assert found(database) == {("R1", "other/audit2.md"), ("R2", "other/audit2.md"), ("S3", "other/queue2.md")}
+
+    def test_the_inbox_may_be_untyped(self, database: Database, vault_root: Path):
+        write(vault_root, "00_Inbox/capture.md", "just a thought")
+        write(vault_root, "elsewhere.md", "just a thought, in the wrong place")
+        sync(database, vault_root)
+        assert found(database, "S3") == {("S3", "elsewhere.md")}
+
+    def test_notes_older_than_the_template_that_required_created_or_the_range_are_not_checked(self, database: Database, vault_root: Path):
+        write(vault_root, "s/old.md", front(type="source", template_version="1.0", kind="article"))
+        write(vault_root, "s/none.md", front(type="source", kind="article"))
+        write(vault_root, "s/new.md", front(type="source", template_version="1.1", kind="article"))
+        write(vault_root, "r/old.md", front(type="weekly_review", template_version="1.0"))
+        write(vault_root, "r/new.md", front(type="weekly_review", template_version="1.1", created="2026-01-01"))
+        sync(database, vault_root)
+        assert found(database, "R2") == {("R2", "s/new.md")}
+        assert found(database, "R17") == {("R17", "r/new.md")}
+
+
+class TestAnkiBacklogRules:
+    def test_never_ankified_waits_sixty_days_by_default(self, database: Database, vault_root: Path):
+        evergreen = "30_Resources/Evergreen/"
+        for name, days in (("Recent", 30), ("Old", 70)):
+            created = (TODAY - timedelta(days=days)).isoformat()
+            write(vault_root, evergreen + f"{name}.md", front(type="evergreen", created=created, domain="ai", ankified_date="null"))
+        sync(database, vault_root)
+        assert found(database, "K1") == {("K1", evergreen + "Old.md")}
+
+    def test_the_backlog_is_not_escalated_but_other_violations_are(self, database: Database, vault_root: Path):
+        created = (TODAY - timedelta(days=70)).isoformat()
+        write(vault_root, "30_Resources/Evergreen/E.md", front(type="evergreen", created=created, domain="ai", ankified_date="null"))
+        write(vault_root, "w.md", "---\ntype: project\nstatus: active\ntemplate_version: 1.1\n---\nW")      # R2: it does escalate
+        sync(database, vault_root)
+        database.check_health()
+        old = (datetime.now(UTC) - timedelta(days=20)).strftime("%Y-%m-%d %H:%M:%S")
+        database.engine.execute(f"UPDATE {_table(database)} SET occurred_at = '{old}' WHERE event_type = 'health.violation_opened'")
+        assert database.check_health().escalated == 1
+        assert {(a.rule_id, a.severity) for a in database.iter_alerts()} == {("K1", "warn"), ("R2", "error")}
+
+
+class TestRemovedRulesAndKinds:
+    def test_the_open_violations_of_a_rule_that_left_the_catalog_are_resolved(self, database: Database, monkeypatch: pytest.MonkeyPatch):
+        monkeypatch.setitem(RULES, "Z9", Rule(id="Z9", name="temporary", group="structure", severity=Severity.INFO, description="d", remediation="r"))
+        database._sync_catalogs()
+        database.record_events([Event(event_type="health.violation_opened", rule_id="Z9", entity_id="a.md", occurred_at=datetime.now(UTC),
+                                      payload={"detail": "", "in_archive": False})])
+        assert any(v["rule_id"] == "Z9" for v in _rows(database, "SELECT rule_id FROM {p}fact_violations WHERE is_open"))
+        monkeypatch.delitem(RULES, "Z9")
+        database._sync_catalogs()                                       # the rule leaves the catalog: its row is closed
+        assert database.check_health().resolved == 1
+        (resolved,) = database.iter_events(event_type="health.violation_resolved")
+        assert (resolved.rule_id, resolved.entity_id, resolved.payload["reason"]) == ("Z9", "a.md", "rule_removed")
+        assert database.check_health().resolved == 0                    # and only once
+
+    def test_a_chat_is_a_registered_kind_of_source(self, database: Database, vault_root: Path):
+        write(vault_root, "s/chat.md", front(type="source", created="2026-01-01", kind="chat", template_version=1.1) + " c")
+        write(vault_root, "s/pod.md", front(type="source", created="2026-01-01", kind="podcast", template_version=1.1) + " p")
+        sync(database, vault_root)
+        assert found(database, "R13") == {("R13", "s/pod.md")}
+
+
+class TestEmptyValuesAreNoValue:
+    def test_an_empty_list_is_not_an_invalid_date_or_year_but_a_wrong_value_still_is(self, database: Database, vault_root: Path):
+        write(vault_root, "s/empty.md", "---\ntype: source\ncreated: 2026-01-01\nkind: docs\nyear: []\nconsumed_on: []\ntemplate_version: 1.1\n---\n e")
+        write(vault_root, "s/blank.md", "---\ntype: source\ncreated: 2026-01-01\nkind: docs\nyear:\nconsumed_on:\ntemplate_version: 1.1\n---\n b")
+        write(vault_root, "s/wrong.md", "---\ntype: source\ncreated: 2026-01-01\nkind: docs\nyear: twenty\nconsumed_on: yesterday\ntemplate_version: 1.1\n---\n w")
+        sync(database, vault_root)
+        assert found(database, "R6") == {("R6", "s/wrong.md")}
+        assert found(database, "R14") == {("R14", "s/wrong.md")}
+
+
 class TestLimits:
     def test_a_limit_from_the_settings_moves_the_detector_and_versions_the_rule(self, database: Database, vault_root: Path):
         created = (TODAY - timedelta(days=3)).isoformat()
         write(vault_root, "30_Resources/Evergreen/E.md", front(type="evergreen", created=created, domain="ai", ankified_date="null"))
         sync(database, vault_root)
-        assert found(database, "K1") == set()                            # 14 days by default
+        assert found(database, "K1") == set()                            # 60 days by default
         database._sync_catalogs({"K1": {"days": 2}})
         assert found(database, "K1") == {("K1", "30_Resources/Evergreen/E.md")} and database.rule_versions()["K1"] == 2
         database._sync_catalogs()
@@ -235,7 +327,7 @@ class TestLimits:
 class TestSeverityDuringAnEpisode:
     @pytest.fixture
     def vault(self, vault_root: Path) -> Path:
-        write(vault_root, "w.md", "---\ntype: project\nstatus: active\n---\nW")        # R2: no created, warn
+        write(vault_root, "w.md", "---\ntype: project\nstatus: active\ntemplate_version: 1.1\n---\nW")        # R2: no created, warn
         return vault_root
 
     def test_an_old_violation_is_escalated_once(self, database: Database, vault: Path):
@@ -263,7 +355,7 @@ class TestSeverityDuringAnEpisode:
         write(vault, "w.md", "---\ntype: project\nstatus: active\ncreated: 2026-01-01\n---\nW")
         sync(database, vault)
         assert database.check_health().resolved == 1
-        write(vault, "w.md", "---\ntype: project\nstatus: active\n---\nW")
+        write(vault, "w.md", "---\ntype: project\nstatus: active\ntemplate_version: 1.1\n---\nW")
         sync(database, vault)
         database.check_health()
         assert [(a.severity, a.reopen_count) for a in database.iter_alerts()] == [("warn", 1)]

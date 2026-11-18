@@ -152,7 +152,8 @@ A *detector* says what is wrong **now**; the log remembers **since when**. After
    a new detector is any view with the same columns added to the union.
 2. It compares them with the open episodes of `fact_violations`. A finding that is not open becomes
    `health.violation_opened`; an open violation that is not found any more becomes `health.violation_resolved`, with
-   `reason` `fixed`, or `note_gone` when its note is no longer stored.
+   `reason` `fixed`, `note_gone` when its note is no longer stored, or `rule_removed` when its rule has left the catalog (the open
+   violations of a removed rule are closed at the next check, so they do not stay open for ever).
 3. It records `health.check_completed`, so that a clean vault can be told from a check that never ran.
 
 All of it in one transaction. A violation is identified by `(rule_id, entity_id, detail)`: a note with two deprecated
@@ -232,7 +233,7 @@ Every rule has an id, a name, a severity, a description and a remediation, in `d
 | Group | Ids | What |
 |---|---|---|
 | registry | R1–R19 | The violations the `property_issues` view finds. |
-| structure | S1–S5 | Duplicate names or content, untyped notes, type and folder disagreeing, stray empty notes. |
+| structure | S2–S5 | Duplicate content, untyped notes, type and folder disagreeing, stray empty notes. (S1, duplicate note names, was removed.) |
 | knowledge | K1–K4 | Evergreens never or stale in Anki, aging placeholders, a gap in Anki reviews. |
 | cadence | D1–D6 | Overdue reviews, weekly review gaps, missing daily notes, aging meeting inbox, stale or long-paused projects. |
 | tasks | T1–T2 | Overdue tasks, duplicate task ids. |
@@ -258,6 +259,24 @@ What the other rules look at, where it is not obvious:
   scheduled check (`SCHEDULER__HEALTH_CRON`) is what makes `sync_stale` and `health_check_not_run` useful: a sync that does
   not run cannot notice itself. The baseline is not a spike, and the system's own alerts (Y, E) are not counted by E2 and E3.
 
+### What the rules do not look at
+
+Some notes are not meant to follow the registry, and checking them only made noise. `health_findings`, the input of the check, leaves
+these out, so they are never opened as alerts:
+
+| What | Not checked by | Why |
+|---|---|---|
+| Templates (`type: template`, or in `99_Templates/`) | R2, R6, R7, S2, S5 | They hold `{{placeholders}}`, and consecutive versions are near copies. |
+| Notes in `_system/` | R1, R2, S3 | Tools write them, not you. |
+| Notes in `00_Inbox/` | S3 | Unstructured capture needs no `type`. |
+| Notes whose `template_version` is missing or below 1.1 | R2, R17 | They predate `created` (sources) and `start_range` / `end_range` (weekly reviews); history is not rewritten. |
+
+The cutoff is the note's own `template_version`, so a new note that has none is not checked by R2 and R17 either: record the template
+version when you create a note.
+
+A property with an empty value is not an invalid one: R6 (dates) and R14 (`year`) treat a blank value and an empty list (`consumed_on: []`) alike
+as no value. A tool that rewrites the frontmatter, such as the Obsidian MCP, writes the empty ones as `[]`.
+
 ### Limits
 
 The threshold rules have limits in their `parameters` (`days`, `hours`, `count`, `percent`, `error_after_days`; see
@@ -276,5 +295,6 @@ found earlier keep the version they were found with.
 A violation has a severity. It starts as its detector says (`task_overdue` says `warn` or `error`; the others have their rule's) and
 can change while the violation is open: the check records a `health.severity_changed` event when it does. Rule **E1**
 (`violation_escalation`) raises a violation's severity one level once it has been open for `days` days (info → warn → error). It
-is applied by the check itself and is not a violation of its own. `fact_violations.severity` and `open_alerts.severity` are the
+is applied by the check itself and is not a violation of its own. It leaves the Anki backlog rules (K1, K2, K3) alone: a backlog
+grows slowly, and escalating all of it would turn every waiting note into an error. `fact_violations.severity` and `open_alerts.severity` are the
 latest of the episode.

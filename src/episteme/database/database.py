@@ -18,7 +18,7 @@ from episteme.database.queries import QueryStore
 from episteme.models.anki import AnkiSource
 from episteme.models.database import Snapshot
 from episteme.models.health import Alert, HealthResult
-from episteme.models.events import EVENT_TYPES, RULES, Event, Rule, Severity, StoredEvent, producer, to_utc
+from episteme.models.events import EVENT_TYPES, NOT_ESCALATED, RULES, Event, Rule, Severity, StoredEvent, producer, to_utc
 from episteme.models.overview import AnkiOverview, DatabaseOverview, ObsidianOverview, Overview
 from episteme.models.obsidian import CategoryDirectory, MarkdownNote, Priority, Task, TaskState
 from episteme.models.sync import AnkiSyncResult, AnkiTableChanges, ObsidianSyncResult
@@ -429,8 +429,8 @@ class Database:
 
         ``health_findings`` says what is wrong; ``fact_violations`` says what was already known to be wrong. A
         finding that is not open is recorded as ``health.violation_opened``; an open violation that is not found any
-        more is ``health.violation_resolved`` (``reason``: ``fixed``, or ``note_gone`` when its note is no longer
-        stored). A violation that stays open but whose severity is different (its detector says so, or rule E1
+        more is ``health.violation_resolved`` (``reason``: ``fixed``, ``note_gone`` when its note is no longer
+        stored, or ``rule_removed`` when its rule has left the catalog). A violation that stays open but whose severity is different (its detector says so, or rule E1
         escalates it after ``days`` open) gets a ``health.severity_changed``. A ``health.check_completed`` event records
         that the check ran, so that a clean vault can be told from a check that never ran. All in one transaction: a
         failure records nothing.
@@ -464,7 +464,7 @@ class Database:
             known = {(row["rule_id"], row["entity_id"], row["detail"]): row
                      for row in self.engine.fetch_all(self.queries["health_open_violations"])}
             opened = findings.keys() - known.keys()
-            resolved = {key for key in known.keys() - findings.keys() if key[0] in evaluated}
+            resolved = {key for key in known.keys() - findings.keys() if key[0] in evaluated or key[0] not in RULES}   # a removed rule is resolved too
             stored = {row["path"] for row in self.engine.fetch_all(self.queries["notes_paths"])} if resolved else set()
             events: list[Event] = []
             for key in sorted(opened):
@@ -482,7 +482,7 @@ class Database:
                 events.append(Event(
                     event_type="health.violation_resolved", entity_id=entity_id, rule_id=rule_id, event_version=versions.get(rule_id),
                     occurred_at=now, discriminator=f"{rule_id}|{detail}",
-                    payload={"detail": detail, "reason": "fixed" if entity_id in stored else "note_gone",
+                    payload={"detail": detail, "reason": "rule_removed" if rule_id not in RULES else "fixed" if entity_id in stored else "note_gone",
                              "opened_at": known[key]["opened_at"].isoformat()},
                 ))
             still_open = known.keys() - resolved | opened
@@ -493,7 +493,7 @@ class Database:
                 if row is None:                      # open, and its rule is not evaluated: nothing to say about it
                     continue
                 severity, reason = row["severity"], "detector"
-                if key in known and escalation is not None and (naive_now - known[key]["opened_at"]).days >= escalation["days"]:
+                if key in known and escalation is not None and key[0] not in NOT_ESCALATED and (naive_now - known[key]["opened_at"]).days >= escalation["days"]:
                     severity, reason = self._raised(severity), "escalation"
                 effective[key] = severity
                 if key in known and known[key]["severity"] != severity:
