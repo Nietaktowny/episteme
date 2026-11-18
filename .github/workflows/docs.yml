@@ -28,7 +28,7 @@ jobs:
         run: uv sync --locked --only-group dev
 
       - name: Build docs
-        run: uv run --no-sync mkdocs build --strict
+        run: uv run --no-sync zensical build --clean --strict
 
       - uses: actions/upload-pages-artifact@v3
         with:
